@@ -17,7 +17,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 import pandas as pd
+import re
 
+from hta.common.trace_df import save_trace_df_to_file
 from hta.common.trace_file import get_trace_files
 from hta.common.trace_filter import CPUOperatorFilter, GPUKernelFilter
 from hta.common.trace_parser import parse_trace_dataframe, parse_trace_dict
@@ -29,6 +31,8 @@ from hta.configs.config import logger
 from hta.configs.default_values import DEFAULT_TRACE_DIR
 from hta.configs.parser_config import ParserConfig
 from hta.utils.utils import get_mp_pool_size, normalize_path
+from hta.common.trace_filter import NameFilter, GPUKernelFilter, CompositeFilter, TimeRangeFilter
+from hta.utils.parallel_state import get_next_pipeline_rank, is_first_stage, is_last_stage
 
 MetaData = Dict[str, Any]
 PHASE_COUNTER: str = "C"
@@ -290,6 +294,29 @@ def add_fwd_bwd_links(df: pd.DataFrame) -> None:
     t1 = time.perf_counter()
     logger.debug(f"Time taken to add fwd_bwd links: {t1 - t0 :.2f} seconds")
 
+def apply_function_for_parallel(inputs, function, use_multiprocessing: bool = True):
+    if not use_multiprocessing:
+        total_results = []
+        for input in inputs:
+            if isinstance(input, [list, tuple]):
+                result = function(*input)
+            else:
+                result = function(input)
+            total_results.append(result)
+        logger.debug(f"finished applying func {function.__name__} using 1 processes.")
+        return total_results
+    
+    num_procs = min(mp.cpu_count(), len(inputs))
+    with mp.get_context("fork").Pool(num_procs) as pool:
+        if isinstance(inputs[0], (list, tuple)):
+            results = pool.starmap(function, inputs)
+        else:
+            results = pool.map(function, inputs)
+        pool.close()
+        pool.join()
+    logger.debug(f"finished parallel applying func {function.__name__} using {num_procs} processes.")
+    
+    return results
 
 class Trace:
     """
@@ -737,3 +764,280 @@ class Trace:
         if not is_start:
             res["bp"] = "e"
         return res
+    
+    def parallel_apply(self, function, need_rank=False):
+        if need_rank:
+            inputs = list(self.traces.items())
+        else:
+            inputs = list(self.traces.values())
+        results = apply_function_for_parallel(inputs, function)
+        keys = list(self.traces.keys())
+        return {key: result for key, result in zip(keys, results)}
+    
+    def save_traces(self, file_path, ranks=None):
+        if ranks is None:
+            effective_ranks = self.get_ranks()
+        else:
+            effective_ranks = set(ranks).intersection(set(self.get_ranks()))
+        
+        inputs = []
+        for rank in effective_ranks:
+            filename, suffix = file_path.split('.', 1)
+            file_path_with_rank = f'{filename}_rank{rank}.{suffix}'
+            inputs.append([self.traces[rank], file_path_with_rank, None, self.meta_data[rank]])
+        apply_function_for_parallel(inputs, save_trace_df_to_file)
+    
+    @staticmethod
+    def combine_into_one_trace(traces_dict: dict):
+        all_trace_dfs = []
+        for rank, trace_df in traces_dict.items():
+            all_trace_dfs.append(trace_df)
+        trace_df = pd.concat(all_trace_dfs, ignore_index=True)
+        return trace_df
+    
+    @staticmethod
+    def display_traces_info(traces):
+        first_trace_df = next(iter(traces.values()))
+        print(f'total {len(traces)} traces, and each trace has {len(first_trace_df)} items')
+        print(first_trace_df['s_cat'].value_counts())
+
+class PipelineParrallelGroupTrace(Trace):
+    def __init__(
+        self,
+        trace_files: Optional[Dict[int, str]] = None,
+        trace_dir: str = DEFAULT_TRACE_DIR,
+        data_parallel_size = -1,
+        tensor_parallel_size = -1,
+        pipeline_parallel_size = -1,
+        num_microbatch = -1,
+    ) -> None:
+        super().__init__(trace_files, trace_dir)
+        self.data_parallel_size = data_parallel_size
+        self.tensor_parallel_size = tensor_parallel_size
+        self.pipeline_parallel_size = pipeline_parallel_size
+        self.num_microbatch = num_microbatch
+    
+    @staticmethod
+    def set_self_microbatch_id(trace_df):
+        trace_df.sort_values(by=['ts', 'dur'], ascending=[True, False], inplace=True)
+
+        # 初始化micro_batch_id列
+        trace_df['micro_batch_id_forward'] = -1
+        trace_df['micro_batch_id_backward'] = -1
+
+        # 标记包含'recv_forward'和'recv_backward'的行
+        trace_df['recv_forward'] = trace_df['s_name'].str.contains('recv_forward').astype(int).cumsum() - 1
+        trace_df['recv_backward'] = trace_df['s_name'].str.contains('recv_backward').astype(int).cumsum() - 1
+
+        # 更新'micro_batch_id_forward'和'micro_batch_id_backward'
+        trace_df.loc[trace_df['s_name'].str.contains('forward'), 'micro_batch_id_forward'] = trace_df['recv_forward']
+        trace_df.loc[trace_df['s_name'].str.contains('backward'), 'micro_batch_id_backward'] = trace_df['recv_backward']
+
+        # 移除辅助列
+        trace_df.drop(['recv_forward', 'recv_backward'], axis=1, inplace=True)
+    
+    @staticmethod
+    def set_recv_send_microbatch_id(trace_df):
+        trace_df['send_prev'] = -1
+        trace_df['send_next'] = -1
+        trace_df['recv_prev'] = -1
+        trace_df['recv_next'] = -1
+
+        trace_df.loc[trace_df['s_name'].str.contains('mccl:recv(forward)', regex=False), 'recv_prev'] = trace_df['micro_batch_id_forward']
+        trace_df.loc[trace_df['s_name'].str.contains('mccl:recv(backward)', regex=False), 'recv_next'] = trace_df['micro_batch_id_backward']
+        trace_df.loc[trace_df['s_name'].str.contains('mccl:send(forward)', regex=False), 'send_next'] = trace_df['micro_batch_id_forward']
+        trace_df.loc[trace_df['s_name'].str.contains('mccl:send(backward)', regex=False), 'send_prev'] = trace_df['micro_batch_id_backward']
+    
+    def process_pipeline_start_end(self, rank, df):
+        if is_first_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
+            df.loc[df['s_name'].str.contains('recv_forward'), 'recv_prev'] = -1
+            df.loc[df['s_name'].str.contains('send_backward'), 'send_prev'] = -1
+        if is_last_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
+            df.loc[df['s_name'].str.contains('recv_backward'), 'recv_next'] = -1
+            df.loc[df['s_name'].str.contains('send_forward'), 'send_next'] = -1
+
+    def set_micro_batch_id(self):
+        for rank in self.get_ranks():
+            self.set_self_microbatch_id(self.traces[rank])
+            self.set_recv_send_microbatch_id(self.traces[rank])
+            self.process_pipeline_start_end(rank, self.traces[rank])
+    
+    @staticmethod
+    def create_regex_for_prefix_match(prefixes):
+        """
+        Creates a regex pattern that matches any string starting with any of the provided prefixes.
+        
+        Parameters:
+        - prefixes (list): A list of prefixes to match at the start of a string.
+        
+        Returns:
+        - str: A regex pattern string.
+        """
+        # Escape each prefix to handle special regex characters
+        escaped_prefixes = [re.escape(prefix) for prefix in prefixes]
+        # Join the escaped prefixes with the regex OR operator '|'
+        name_pattern = '^(' + '|'.join(escaped_prefixes) + ')'
+        return name_pattern
+
+    def keep_useful_span(self, trace_df):
+        user_annotation_names_list = [
+            'forward_step', 
+            'backward_step', 
+            'forward_backward_pipelining_without_interleaving', 
+            'get_batch', 'warmup_state', 
+            'steady_state', 
+            'cooldown_state', 
+            'mccl:', 
+            'ProfilerStep', 
+            'recv_forward', 
+            'recv_backward', 
+            'send_forward', 
+            'send_backward', 
+            'send_forward_recv_backward', 
+            'send_backward_recv_forward'
+        ]
+        python_function_names_list = [
+            'Embedding', 
+            'RotaryEmbedding', 
+            'ParallelAttention', 
+            'ParallelMLP',  
+            'RmsNormBackward', 
+            'LinearWithGradAccumulationAndAsyncCommunicationBackward', 
+            'ParallelTransformerLayer',
+            'ColumnParallelLinear', 
+            'RowParallelLinear', 
+            'post_language_model_processing', 
+            'parallel_lm_logits', 
+            'vocab_parallel_cross_entropy', 
+            'average_losses_across_data_parallel_group',  
+            'gather_model_params', 
+            'step',
+            'apply_rotary_pos_emb',
+            'get_batch', 
+        ]
+        
+        cpu_op_names_list = [
+            'aten::matmul', 
+            'aten::rms_norm_forward', 
+            'aten::scaled_dot_product_attention', 
+            'aten::rms_norm_backward', 
+            'aten::_scaled_dot_product_attention_flash_musa_backward', 
+            'aten::embedding_backward'
+        ]
+        
+        filter_user_annotation = NameFilter(self.create_regex_for_prefix_match(user_annotation_names_list))
+        filter_python_function = NameFilter(self.create_regex_for_prefix_match(python_function_names_list))
+        filter_cpu_op = NameFilter(self.create_regex_for_prefix_match(cpu_op_names_list))
+        
+        trace_df_user_annotation = filter_user_annotation(trace_df[trace_df['s_cat'] == 'user_annotation'])
+        trace_df_python_function = filter_python_function(trace_df[trace_df['s_cat'] == 'python_function'])
+        trace_df_cpu_op = filter_cpu_op(trace_df[trace_df['s_cat'] == 'cpu_op'])
+        
+        trace_df = pd.concat([trace_df_user_annotation, trace_df_python_function, trace_df_cpu_op])
+        
+        return trace_df
+    
+    def keep_comm_span_only(self, trace_df):
+        comm_names_list = [
+            'forward_step', 
+            'backward_step', 
+            'recv_forward', 
+            'recv_backward', 
+            'send_forward', 
+            'send_backward', 
+            'send_forward_recv_backward', 
+            'send_backward_recv_forward', 
+            'mccl:send', 
+            'mccl:recv', 
+            'ProfilerStep'
+        ]
+        filter_comm = NameFilter(self.create_regex_for_prefix_match(comm_names_list))
+        
+        return filter_comm(trace_df)
+            
+    
+    def get_p2p_ranks_pairs(self, ranks):
+        if len(ranks) < 2: return []
+        ranks_sorted = sorted(ranks)
+        p2p_devices_pairs = []
+        for i in range(len(ranks_sorted) - 1):
+            if(ranks[i+1] == get_next_pipeline_rank(ranks[i], self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size)):
+                p2p_devices_pairs.append([ranks[i], ranks[i+1]])
+        return p2p_devices_pairs 
+    
+    def get_p2p_trace_for_one_pair(self, rank_prev, rank_next):
+        trace_df_prev_orig = self.traces[rank_prev]
+        trace_df_next_orig = self.traces[rank_next]
+
+        df_p2p_forward = pd.merge(trace_df_prev_orig, trace_df_next_orig, left_on='send_next', right_on='recv_prev', how='inner', suffixes=('_on_prev', '_on_next'))
+        df_p2p_forward = df_p2p_forward[df_p2p_forward['send_next_on_prev'] >= 0]
+        df_p2p_forward['p2p_forward'] = True
+        df_p2p_forward['comm_time'] = np.minimum(df_p2p_forward['dur_on_prev'], df_p2p_forward['dur_on_next'])
+
+        trace_df_prev_new = pd.merge(
+            trace_df_prev_orig,
+            df_p2p_forward[['send_next_on_prev', 'comm_time']],
+            left_on='send_next',
+            right_on='send_next_on_prev',
+            how='left').drop(columns='send_next_on_prev')
+        
+        trace_df_next_new = pd.merge(
+            trace_df_next_orig,
+            df_p2p_forward[['recv_prev_on_next', 'comm_time']],
+            left_on='recv_prev',
+            right_on='recv_prev_on_next',
+            how='left').drop(columns='recv_prev_on_next')
+
+        df_p2p_backward = pd.merge(trace_df_prev_orig, trace_df_next_orig, left_on='recv_next', right_on='send_prev', how='inner', suffixes=('_on_prev', '_on_next'))
+        df_p2p_backward = df_p2p_backward[df_p2p_backward['recv_next_on_prev'] >= 0]
+        df_p2p_backward['p2p_backward'] = True
+        df_p2p_backward['comm_time'] = np.minimum(df_p2p_backward['dur_on_prev'], df_p2p_backward['dur_on_next'])
+
+        trace_df_prev_new = pd.merge(
+            trace_df_prev_new,
+            df_p2p_backward[['recv_next_on_prev', 'comm_time']],
+            left_on='recv_next',
+            right_on='recv_next_on_prev',
+            how='left',
+            suffixes=('', '_new'))
+
+        trace_df_prev_new = trace_df_prev_new.drop(columns='recv_next_on_prev')
+        trace_df_prev_new['comm_time'] = trace_df_prev_new['comm_time'].fillna(0) + trace_df_prev_new['comm_time_new'].fillna(0)
+        trace_df_prev_new = trace_df_prev_new.drop(columns='comm_time_new')
+
+        trace_df_next_new = pd.merge(
+            trace_df_next_new,
+            df_p2p_backward[['send_prev_on_next', 'comm_time']],
+            left_on='send_prev',
+            right_on='send_prev_on_next',
+            how='left',
+            suffixes=('', '_new')).drop(columns='send_prev_on_next')
+
+        trace_df_next_new['comm_time'] = trace_df_next_new['comm_time'].fillna(0) + trace_df_next_new['comm_time_new'].fillna(0)
+        trace_df_next_new = trace_df_next_new.drop(columns='comm_time_new')
+
+        trace_df_prev_orig['comm_time'] = trace_df_prev_new['comm_time']
+        trace_df_prev_orig['wait_time'] = trace_df_prev_orig['dur'] - trace_df_prev_orig['comm_time']
+        trace_df_next_orig['comm_time'] = trace_df_next_new['comm_time']
+        trace_df_next_orig['wait_time'] = trace_df_next_orig['dur'] - trace_df_next_orig['comm_time']
+
+        df_p2p_bidirection = pd.concat([df_p2p_forward, df_p2p_backward])
+        
+        return df_p2p_bidirection
+    
+    def establish_p2p_link_on_adjacent_ranks(self):
+        rank_pairs = self.get_p2p_ranks_pairs(self.get_ranks())
+        self.traces_p2p_comm = {}
+        for rank_prev, rank_next in rank_pairs:
+            df_p2p_bidirection = self.get_p2p_trace_for_one_pair(rank_prev, rank_next)
+            self.traces_p2p_comm[rank_prev] = df_p2p_bidirection
+        
+        self.trace_df_p2p_flow_events = self.combine_into_one_trace(self.traces_p2p_comm)
+    
+    def save_traces_with_p2p_comm(self, save_path):
+        trace_df_all_ranks = self.combine_into_one_trace(self.traces)
+        save_trace_df_to_file(trace_df_all_ranks, save_path, self.trace_df_p2p_flow_events, next(iter(self.meta_data.values())))
+    
+    
+    
+    

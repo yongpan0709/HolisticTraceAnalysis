@@ -888,3 +888,100 @@ class CallStackGraph:
                 self._dfs_traverse_node(child_nid, enter_func, exit_func)
 
         exit_func(node_id, node)
+    
+    def print_call_stack(self, node_id=None, level=0, save_path=None):
+        def get_node_info(node_id):
+            if node_id < 0:
+                return 'Root'
+            row_data = self.df.loc[self.df['index'] == node_id].iloc[0].to_dict()
+            info_dict = {
+                "name": (row_data.get('s_name', -1), ''),
+                "duration": (row_data.get('dur', -1) / 1000, 'ms'),
+                "comm_time": (row_data.get('comm_time', -1) / 1000, 'ms'),
+                "wait_time": (row_data.get('wait_time', -1) / 1000, 'ms'),
+                "input_dims": (row_data.get('input_dims', -1), ''),
+                "input_type": (row_data.get('input_type', -1), ''),
+                "flops": (row_data.get('flops', -1), -1),
+                "TFLOPS": (row_data.get('TFLOPS', -1), -1),
+                "comm_volume": (row_data.get('comm_volumn', -1), 'B'),
+                "bandwidth": (row_data.get('bandwidth', -1), 'GB/s'),
+                "num_kernels": (row_data.get('num_kernels', -1), ''),
+                "kernel_dur_sum": (row_data.get('kernel_dur_sum', -1) / 1000, 'ms'),
+                "kernel_span": (row_data.get('kernel_span', -1) / 1000, 'ms'),
+            }
+            filtered_info = {k: v for k, v in info_dict.items() if not(isinstance(v[0], (int, float)) and v[0] < 0)}
+            node_info = ''
+            for key, value in filtered_info.items():
+                node_info += f" {key}={value[0]} {value[1]},"
+            return node_info
+
+        # If no specific node_id is provided, start from the root node.
+        if node_id is None:
+            node_id = self.root_index
+
+        node = self.nodes.get(node_id)
+        # Exit the function early if the node doesn't exist.
+        if not node:
+            return
+
+        # Create an indentation based on the current depth level.
+        indent = '    ' * level
+
+        # Build a string that contains information about the current node.
+        
+        # name = self.df.loc[self.df['index'] == node_id, 's_name'].iloc[0] if node_id >= 0 else 'root'
+        node_info = f"{indent}{get_node_info(node_id)}\n"
+        
+        # Recursively call this function for all children of the current node.
+        for child_id in node.children:
+            node_info += self.print_call_stack(node_id=child_id, level=level + 1)
+
+        # If it's the top-level call and a save path is specified, save the output to a file.
+        if level == 0 and save_path:
+            with open(save_path, 'w') as file:
+                file.write(node_info)
+            print(f"Call stack has been saved to {save_path}")
+        elif level == 0:  # If no save path is specified, print the output to the console.
+            print(node_info)
+
+        # Return the constructed string for recursive usage.
+        return node_info
+    
+    def mark_send_recv_direction(self, node_index=None, parent_name=None):
+        """
+        Mark the direction (forward or backward) of send/receive operations starting from a given node index.
+        
+        Args:
+            node_index (int): Index of the current node in the graph to be evaluated.
+            parent_name (str): Name of the parent node to determine direction context.
+        """
+        # If no specific node_id is provided, start from the root node.
+        if node_index is None:
+            node_index = self.root_index
+            
+        if node_index not in self.nodes:
+            return
+        
+        node = self.nodes[node_index]
+        if node_index == self.root_index:
+            node_name = ''
+        else:
+            node_name = self.df.loc[self.df['index'] == node_index].iloc[0]['s_name']
+
+        # Determine the new s_name based on the operation type and parent's context
+        if node_name == 'mccl:send':
+            if 'send_forward' in parent_name:
+                new_name = 'mccl:send(forward)'
+            elif 'send_backward' in parent_name:
+                new_name = 'mccl:send(backward)'
+            self.df.loc[self.df['index'] == node_index, 's_name'] = new_name
+        elif node_name == 'mccl:recv':
+            if 'recv_forward' in parent_name:
+                new_name = 'mccl:recv(forward)'
+            elif 'recv_backward' in parent_name:
+                new_name = 'mccl:recv(backward)'
+            self.df.loc[self.df['index'] == node_index, 's_name'] = new_name
+        
+        # Recursively apply this method to all children
+        for child_index in node.children:
+            self.mark_send_recv_direction(child_index, parent_name=node_name)

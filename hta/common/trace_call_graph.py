@@ -483,3 +483,16 @@ class CallGraph:
         if rank and rank != self._cached_rank:
             self._update_cached_data(rank)
         return self._cached_gpu_kernels
+
+    def print_call_graph(self, save_path=None):
+        for call_stack in self.call_stacks:
+            call_stack.print_call_stack(save_path)
+    
+    def save_call_graph_to_trace(self):
+        for rank in self.ranks:
+            for _, call_stack in self.rank_to_stacks[rank]:
+                call_stack.save_call_stack_to_dataframe()
+    
+    def mark_send_recv_direction(self):
+        for call_stack in self.call_stacks:
+            call_stack.mark_send_recv_direction()

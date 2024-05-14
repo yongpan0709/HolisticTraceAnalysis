@@ -227,9 +227,13 @@ def parse_trace_file(
     cfg = cfg or ParserConfig.get_default_cfg()
 
     meta, df, local_symbol_table = parse_trace_dataframe(trace_file_path, cfg)
-
+    print(f'zyy parse_trace_dataframe:  gpu = {len(df.loc[df["stream"] >= 0])}')
+    print(f'zyy after parse_trace_dataframe: ac2g={len(df.loc[df["cat"] == local_symbol_table.get_sym_id_map().get("ac2g")])}')
+    print(f'zyy after parse_trace_dataframe: cpu_op={len(df.loc[df["cat"] == local_symbol_table.get_sym_id_map().get("cpu_op")])}')
     # add fwd bwd links between CPU ops
     add_fwd_bwd_links(df)
+    print(f'zyy add_fwd_bwd_links: {len(df.loc[df["stream"] >= 0])}')
+    print(f'zyy after add_fwd_bwd_links: ac2g={len(df.loc[df["cat"] == local_symbol_table.get_sym_id_map().get("ac2g")])}')
 
     df = transform_correlation_to_index(df, local_symbol_table)
 
@@ -240,6 +244,7 @@ def parse_trace_file(
     logger.warning(
         f"Overall parsing of {trace_file_path} in {(t_end - t_start):.2f} seconds; current PID:{os. getpid()}"
     )
+
     return meta, df, local_symbol_table
 
 
@@ -281,6 +286,8 @@ def add_fwd_bwd_links(df: pd.DataFrame) -> None:
     df_fwdbwd_merged = df_fwdbwd_start_events.merge(
         df_fwdbwd_end_events, how="inner", on="id", suffixes=("_start", "_end")
     )
+    
+    print(f'zyy: df_fwdbwd_merged={len(df_fwdbwd_merged)}')
 
     start_indices = df_fwdbwd_merged["index_start"]
     end_indices = df_fwdbwd_merged["index_end"]
@@ -376,7 +383,7 @@ class Trace:
         if self.is_parsed:
             logger.warning("Traces are already parsed and loaded!")
             return
-        self.parse_traces()
+        self.parse_traces(use_multiprocessing=False)
         self.align_and_filter_trace(include_last_profiler_step)
         for rank, df in self.traces.items():
             df = self.traces[rank].set_index("index", drop=False)
@@ -668,6 +675,7 @@ class Trace:
             filtered_gpu_kernels = gpu_kernels.merge(
                 cpu_kernels["correlation"], on="correlation", how="inner"
             )
+            print(f'zyy: filtered_gpu_kernels={len(filtered_gpu_kernels)}')
             return pd.concat([filtered_gpu_kernels, cpu_kernels], axis=0)
 
         if not profiler_steps:
@@ -922,7 +930,9 @@ class PipelineParrallelGroupTrace(Trace):
             'aten::scaled_dot_product_attention', 
             'aten::rms_norm_backward', 
             'aten::_scaled_dot_product_attention_flash_musa_backward', 
-            'aten::embedding_backward'
+            'aten::embedding_backward',
+            'autograd::',
+            'torch::autograd::'
         ]
         
         filter_user_annotation = NameFilter(self.create_regex_for_prefix_match(user_annotation_names_list))
@@ -973,35 +983,51 @@ class PipelineParrallelGroupTrace(Trace):
         df_p2p_forward = df_p2p_forward[df_p2p_forward['send_next_on_prev'] >= 0]
         df_p2p_forward['p2p_forward'] = True
         df_p2p_forward['comm_time'] = np.minimum(df_p2p_forward['dur_on_prev'], df_p2p_forward['dur_on_next'])
-
+        # print('df_p2p_forward')
+        # print(df_p2p_forward[['s_name_on_prev', 's_name_on_next', 'send_next_on_prev', 'recv_prev_on_next', 'dur_on_prev', 'dur_on_next', 'comm_time']].head(20))
+        # print('trace_df_prev')
+        # print(trace_df_prev_orig[['s_name', 'send_next', 'recv_next', 'send_prev', 'recv_prev', 'dur']].head(20))
         trace_df_prev_new = pd.merge(
             trace_df_prev_orig,
             df_p2p_forward[['send_next_on_prev', 'comm_time']],
             left_on='send_next',
             right_on='send_next_on_prev',
-            how='left').drop(columns='send_next_on_prev')
+            how='left',
+            suffixes=('', '_new')).drop(columns='send_next_on_prev')
+        if 'comm_time_new' in trace_df_prev_new.columns:
+            trace_df_prev_new['comm_time'] = trace_df_prev_new['comm_time'].fillna(0) + trace_df_prev_new['comm_time_new'].fillna(0)
+            trace_df_prev_new = trace_df_prev_new.drop(columns='comm_time_new')
+        # print('after merge trace_df_prev')
+        # print(trace_df_prev_new[['s_name', 'send_next', 'recv_next', 'send_prev', 'recv_prev', 'dur', 'comm_time']].head(20))
         
         trace_df_next_new = pd.merge(
             trace_df_next_orig,
             df_p2p_forward[['recv_prev_on_next', 'comm_time']],
             left_on='recv_prev',
             right_on='recv_prev_on_next',
-            how='left').drop(columns='recv_prev_on_next')
+            how='left',
+            suffixes=('', '_new')).drop(columns='recv_prev_on_next')
+        if 'comm_time_new' in trace_df_next_new.columns:
+            trace_df_next_new['comm_time'] = trace_df_next_new['comm_time'].fillna(0) + trace_df_next_new['comm_time_new'].fillna(0)
+            trace_df_next_new = trace_df_next_new.drop(columns='comm_time_new')
 
         df_p2p_backward = pd.merge(trace_df_prev_orig, trace_df_next_orig, left_on='recv_next', right_on='send_prev', how='inner', suffixes=('_on_prev', '_on_next'))
         df_p2p_backward = df_p2p_backward[df_p2p_backward['recv_next_on_prev'] >= 0]
         df_p2p_backward['p2p_backward'] = True
         df_p2p_backward['comm_time'] = np.minimum(df_p2p_backward['dur_on_prev'], df_p2p_backward['dur_on_next'])
-
+        # print('df_p2p_backward')
+        # print(df_p2p_backward[['s_name_on_prev', 's_name_on_next', 'send_next_on_prev', 'recv_prev_on_next', 'dur_on_prev', 'dur_on_next', 'comm_time']].head(20))
+        # print('trace_df_prev')
+        # print(trace_df_prev_new[['s_name', 'send_next', 'recv_next', 'send_prev', 'recv_prev', 'dur', 'comm_time']].head(20))
         trace_df_prev_new = pd.merge(
             trace_df_prev_new,
             df_p2p_backward[['recv_next_on_prev', 'comm_time']],
             left_on='recv_next',
             right_on='recv_next_on_prev',
             how='left',
-            suffixes=('', '_new'))
-
-        trace_df_prev_new = trace_df_prev_new.drop(columns='recv_next_on_prev')
+            suffixes=('', '_new')).drop(columns='recv_next_on_prev')
+        # print('after merge trace_df_prev')
+        # print(trace_df_prev_new[['s_name', 'send_next', 'recv_next', 'send_prev', 'recv_prev', 'recv_next_on_prev', 'dur', 'comm_time', 'comm_time_new']].head(20))
         trace_df_prev_new['comm_time'] = trace_df_prev_new['comm_time'].fillna(0) + trace_df_prev_new['comm_time_new'].fillna(0)
         trace_df_prev_new = trace_df_prev_new.drop(columns='comm_time_new')
 
@@ -1020,10 +1046,78 @@ class PipelineParrallelGroupTrace(Trace):
         trace_df_prev_orig['wait_time'] = trace_df_prev_orig['dur'] - trace_df_prev_orig['comm_time']
         trace_df_next_orig['comm_time'] = trace_df_next_new['comm_time']
         trace_df_next_orig['wait_time'] = trace_df_next_orig['dur'] - trace_df_next_orig['comm_time']
+        # print(trace_df_prev_orig[['dur', 'comm_time', 'wait_time']].head(20))
+        # print(trace_df_next_orig[['dur', 'comm_time', 'wait_time']].head(20))
 
         df_p2p_bidirection = pd.concat([df_p2p_forward, df_p2p_backward])
         
         return df_p2p_bidirection
+    
+    # def get_p2p_trace_for_one_pair(self, rank_prev, rank_next):
+    #     trace_df_prev_orig = self.traces[rank_prev]
+    #     trace_df_next_orig = self.traces[rank_next]
+
+    #     df_p2p_forward = pd.merge(trace_df_prev_orig, trace_df_next_orig, left_on='send_next', right_on='recv_prev', how='inner', suffixes=('_on_prev', '_on_next'))
+    #     df_p2p_forward = df_p2p_forward[df_p2p_forward['send_next_on_prev'] >= 0]
+    #     df_p2p_forward['p2p_forward'] = True
+    #     df_p2p_forward['comm_time'] = np.minimum(df_p2p_forward['dur_on_prev'], df_p2p_forward['dur_on_next'])
+
+    #     trace_df_prev_new = pd.merge(
+    #         trace_df_prev_orig,
+    #         df_p2p_forward[['send_next_on_prev', 'comm_time']],
+    #         left_on='send_next',
+    #         right_on='send_next_on_prev',
+    #         how='left').drop(columns='send_next_on_prev')
+    #     if 'comm_time_new' in trace_df_prev_new.columns:
+    #         trace_df_prev_new['comm_time'] = trace_df_prev_new['comm_time'].fillna(0) + trace_df_prev_new['comm_time_new'].fillna(0)
+    #         trace_df_prev_new = trace_df_prev_new.drop(columns='comm_time_new')
+        
+    #     trace_df_next_new = pd.merge(
+    #         trace_df_next_orig,
+    #         df_p2p_forward[['recv_prev_on_next', 'comm_time']],
+    #         left_on='recv_prev',
+    #         right_on='recv_prev_on_next',
+    #         how='left').drop(columns='recv_prev_on_next')
+    #     if 'comm_time_new' in trace_df_next_new.columns:
+    #         trace_df_next_new['comm_time'] = trace_df_next_new['comm_time'].fillna(0) + trace_df_next_new['comm_time_new'].fillna(0)
+    #         trace_df_next_new = trace_df_next_new.drop(columns='comm_time_new')
+
+    #     df_p2p_backward = pd.merge(trace_df_prev_orig, trace_df_next_orig, left_on='recv_next', right_on='send_prev', how='inner', suffixes=('_on_prev', '_on_next'))
+    #     df_p2p_backward = df_p2p_backward[df_p2p_backward['recv_next_on_prev'] >= 0]
+    #     df_p2p_backward['p2p_backward'] = True
+    #     df_p2p_backward['comm_time'] = np.minimum(df_p2p_backward['dur_on_prev'], df_p2p_backward['dur_on_next'])
+
+    #     trace_df_prev_new = pd.merge(
+    #         trace_df_prev_new,
+    #         df_p2p_backward[['recv_next_on_prev', 'comm_time']],
+    #         left_on='recv_next',
+    #         right_on='recv_next_on_prev',
+    #         how='left',
+    #         suffixes=('', '_new'))
+
+    #     trace_df_prev_new = trace_df_prev_new.drop(columns='recv_next_on_prev')
+    #     trace_df_prev_new['comm_time'] = trace_df_prev_new['comm_time'].fillna(0) + trace_df_prev_new['comm_time_new'].fillna(0)
+    #     trace_df_prev_new = trace_df_prev_new.drop(columns='comm_time_new')
+
+    #     trace_df_next_new = pd.merge(
+    #         trace_df_next_new,
+    #         df_p2p_backward[['send_prev_on_next', 'comm_time']],
+    #         left_on='send_prev',
+    #         right_on='send_prev_on_next',
+    #         how='left',
+    #         suffixes=('', '_new')).drop(columns='send_prev_on_next')
+
+    #     trace_df_next_new['comm_time'] = trace_df_next_new['comm_time'].fillna(0) + trace_df_next_new['comm_time_new'].fillna(0)
+    #     trace_df_next_new = trace_df_next_new.drop(columns='comm_time_new')
+
+    #     trace_df_prev_orig['comm_time'] = trace_df_prev_new['comm_time']
+    #     trace_df_prev_orig['wait_time'] = trace_df_prev_orig['dur'] - trace_df_prev_orig['comm_time']
+    #     trace_df_next_orig['comm_time'] = trace_df_next_new['comm_time']
+    #     trace_df_next_orig['wait_time'] = trace_df_next_orig['dur'] - trace_df_next_orig['comm_time']
+
+    #     df_p2p_bidirection = pd.concat([df_p2p_forward, df_p2p_backward])
+        
+    #     return df_p2p_bidirection
     
     def establish_p2p_link_on_adjacent_ranks(self):
         rank_pairs = self.get_p2p_ranks_pairs(self.get_ranks())

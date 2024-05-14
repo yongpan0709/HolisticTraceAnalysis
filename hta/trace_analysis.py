@@ -619,30 +619,33 @@ class PipelineParallelGroupTraceAnalysis(TraceAnalysis):
         ParserConfig.set_default_cfg(cfg)
         self.t = PipelineParrallelGroupTrace(trace_files, trace_dir, data_parallel_size, tensor_parallel_size, pipeline_parallel_size, num_microbatch)
         self.t.load_traces(include_last_profiler_step)
+        self.t.decode_symbol_ids()
+        self.t.save_traces('init.json')
         assert self.t.is_parsed is True
         self.output_dir = os.path.join(trace_dir, 'output')
     
     def analyze_pipeline_parallel(self):
-        self.t.decode_symbol_ids()
         self.t.display_traces_info(self.t.traces)
         
-        self.t.traces = self.t.parallel_apply(self.t.keep_useful_span)
-        self.t.display_traces_info(self.t.traces)
+        # self.t.traces = self.t.parallel_apply(self.t.keep_useful_span)
+        # self.t.display_traces_info(self.t.traces)
         self.t.save_traces('after_filter.json')
         
         self.t.traces = self.t.parallel_apply(calculate_comm_volume_for_trace_df)
         self.t.traces = self.t.parallel_apply(calculate_flops_for_trace_df)
-        # self.call_graph = CallGraph(self.t)
-        # self.call_graph.print_call_graph()
+        self.call_graph = CallGraph(self.t)
+        self.call_graph.print_call_graph()
+        return 
+        self.call_graph.rename_duplicate_children()
+        self.call_graph.assign_full_names()
+        self.call_graph.print_call_graph('all.txt')
         
         
         self.t.traces = self.t.parallel_apply(self.t.keep_comm_span_only) 
-        # self.t.mark_send_recv_direction()
         self.call_graph = CallGraph(self.t)
         self.call_graph.mark_send_recv_direction()
         self.t.set_micro_batch_id()
         self.t.establish_p2p_link_on_adjacent_ranks()
-        # self.call_graph = CallGraph(self.t)
-        self.call_graph.print_call_graph()
+        self.call_graph.print_call_graph('only_comm.txt')
         self.t.save_traces_with_p2p_comm(f'{self.output_dir}/trace_only_comm_all_ranks_with_flow.json')
     

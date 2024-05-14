@@ -12,7 +12,7 @@ import psutil
 import os
 import sys
 import shutil
-import datetime
+from datetime import datetime
 
 
 class KernelType(Enum):
@@ -237,7 +237,7 @@ def find_and_create_symlinks(source_directory, target_directory, suffix_list):
     Finds files in the specified directory whose names end with numbers from the given list, and creates symbolic links for them in a new directory.
     """
     # Prepare the target directory
-    prepare_directory(target_directory)
+    prepare_directory(target_directory, force_clear=True)
 
     # Iterate through the source directory and create symbolic links for matching files
     for filename in os.listdir(source_directory):

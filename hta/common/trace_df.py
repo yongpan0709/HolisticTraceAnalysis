@@ -200,7 +200,7 @@ def generate_metadata_events(pids_list):
     return metadata_events
 
 def save_trace_df_to_file(df: pd.DataFrame, output_file: str, trace_df_p2p_comm_flow: pd.DataFrame=None, meta_data: dict=None):
-    print(f'zyy: output_file={output_file}')
+    # print(f'zyy: output_file={output_file}')
     columns_to_keep = ['name', 'cat', 'pid', 'tid', 'ts', 'dur']
     columns_to_drop = ['s_name', 's_cat']
 
@@ -216,7 +216,6 @@ def save_trace_df_to_file(df: pd.DataFrame, output_file: str, trace_df_p2p_comm_
     metadata_events = generate_metadata_events([int(x) for x in new_df['pid'].unique()])
     trace_data["traceEvents"] = trace_events + flow_events + metadata_events
     
-    print(trace_data)
     with open(output_file, 'w') as f:
         json.dump(trace_data, f, indent=4)
 

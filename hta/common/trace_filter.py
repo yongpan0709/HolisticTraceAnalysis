@@ -6,6 +6,7 @@ from hta.common.trace_symbol_table import TraceSymbolTable
 
 from hta.configs.config import logger
 from hta.utils.utils import get_symbol_column_names
+import re
 
 
 class Filter(ABC):
@@ -234,6 +235,21 @@ class NameStringColumnFilter(Filter):
 
         return df.loc[df[name_column].str.match(self.name_pattern)]
 
+def create_regex_for_prefix_match(prefixes):
+    """
+    Creates a regex pattern that matches any string starting with any of the provided prefixes.
+    
+    Parameters:
+    - prefixes (list): A list of prefixes to match at the start of a string.
+    
+    Returns:
+    - str: A regex pattern string.
+    """
+    # Escape each prefix to handle special regex characters
+    escaped_prefixes = [re.escape(prefix) for prefix in prefixes]
+    # Join the escaped prefixes with the regex OR operator '|'
+    name_pattern = '^(' + '|'.join(escaped_prefixes) + ')'
+    return name_pattern
 
 class NameIdColumnFilter(Filter):
     def __init__(self, name_pattern: str) -> None:

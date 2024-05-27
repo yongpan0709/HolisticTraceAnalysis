@@ -1,4 +1,4 @@
-from hta.trace_analysis import TraceAnalysis, PipelineParallelGroupTraceAnalysis
+from hta.trace_analysis import TraceAnalysis, MegatronPipelineParallelGroupTraceAnalysis
 from hta.utils.parallel_state import get_3d_parallel_groups, is_first_stage, is_last_stage, get_next_pipeline_rank
 from hta.utils.utils import partition_files_across_directories, LogToFile, prepare_directory
 from hta.common.trace_call_graph import CallGraph 
@@ -18,13 +18,13 @@ import numpy as np
 
 pd.set_option('display.max_columns', None)
 
-trace_dir = '/home/dist/yiyuan/llama7b_trace_gpu_complete'
+trace_dir = '/home/dist/yiyuan/trace_dir_llama7b_blocking'
 trace_dir_for_pp_group = os.path.join(trace_dir, 'pp_group')
 
 TP_SIZE = 2
 PP_SIZE = 4
 DP_SIZE = 2
-NUM_MICROBATCHES = 8
+NUM_MICROBATCHES = 4
 
 def load_trace_analyer(trace_dir):
     cache_path = os.path.join(trace_dir, 'analyzer_cache.pkl')
@@ -34,7 +34,7 @@ def load_trace_analyer(trace_dir):
             analyzer = pickle.load(f)
         print(f'analyzer has been loaded from {cache_path}')
     else:
-        analyzer = PipelineParallelGroupTraceAnalysis(trace_dir=trace_dir, data_parallel_size=DP_SIZE, tensor_parallel_size=TP_SIZE, pipeline_parallel_size=PP_SIZE, num_microbatch=NUM_MICROBATCHES)
+        analyzer = MegatronPipelineParallelGroupTraceAnalysis(trace_dir=trace_dir, data_parallel_size=DP_SIZE, tensor_parallel_size=TP_SIZE, pipeline_parallel_size=PP_SIZE)
         with open(cache_path, 'wb') as f:
             pickle.dump(analyzer, f)
         print(f'analyzer has been saved to {cache_path}')
@@ -66,6 +66,7 @@ def main():
         all_data_parallel_group_ranks, all_tensor_parallel_group_ranks, all_pipeline_parallel_group_ranks = get_3d_parallel_groups(TP_SIZE, PP_SIZE, DP_SIZE)
         all_pp_group_sub_dirs = partition_files_across_directories(trace_dir, trace_dir_for_pp_group, all_pipeline_parallel_group_ranks, skip=(not rank == 0))
         time.sleep(3)
+        return
 
         num_folders = len(all_pp_group_sub_dirs)
         folders_per_process = num_folders // size
@@ -86,6 +87,6 @@ def main():
             process_single_pp_group(folder)
 
 if __name__ == '__main__':
-    # main()
+    main()
     logging.basicConfig(level=logging.DEBUG)
-    process_single_pp_group('/home/dist/yiyuan/llama7b_trace_gpu_complete/pp_group_0')
+    process_single_pp_group('/home/dist/yiyuan/trace_dir_llama7b_blocking/pp_group_0')

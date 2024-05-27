@@ -9,6 +9,7 @@ from hta.common.trace_call_stack import CallStackGraph, CallStackIdentity, CallS
 from hta.common.trace_symbol_table import TraceSymbolTable
 from hta.common.types import DeviceType, infer_device_type
 from hta.configs.config import logger
+from hta.utils.utils import add_rank_to_filename
 
 
 class CallGraph:
@@ -239,7 +240,7 @@ class CallGraph:
         logger.debug("connecting stacks of forward and backward threads")
         self._connect_stacks(rank)
         self._update_rank_stack_mapping(rank)
-
+        
         # Save call stack information to the dataframe
         if len(self.call_stacks) > 0:
             csg = self.call_stacks[-1]
@@ -247,8 +248,6 @@ class CallGraph:
 
         self._normalize_stack_columns(df)
         
-        print(f'zyy: mapping={self.mapping}')
-
     @staticmethod
     def _normalize_stack_columns(df: pd.DataFrame) -> None:
         """Normalize the values of the stack columns."""
@@ -274,7 +273,7 @@ class CallGraph:
             stack_indices: List[int] = stacks["stack_index"].to_list()
             bwd_stack: CallStackGraph = self.call_stacks[stack_indices[0]]
             main_stack: CallStackGraph = self.call_stacks[stack_indices[1]]
-            self._link_main_and_bwd_stacks(main_stack, bwd_stack)
+            self._link_main_and_bwd_stacks(main_stack, bwd_stack, bwd_annotation_str='backward_step')
 
     def _update_rank_stack_mapping(self, rank: int) -> None:
         """Update the stack root and index after connect CallStackGraph objects."""
@@ -487,87 +486,36 @@ class CallGraph:
             self._update_cached_data(rank)
         return self._cached_gpu_kernels
     
-    def print_call_graph(self, save_path=None):
-        print(f'zyy: print_call_graph(save_path={save_path})')
-        for rank in self.ranks:
-            stacks: pd.DataFrame = self.mapping.loc[
-                self.mapping["rank"].eq(rank) & self.mapping["label"].isin(["bwd", "main"])
-            ].sort_values("label")
-            
-            if isinstance(stacks, pd.DataFrame) and stacks.shape[0] == 2:
-                stack_indices: List[int] = stacks["stack_index"].to_list()
-                bwd_stack: CallStackGraph = self.call_stacks[stack_indices[0]]
-                main_stack: CallStackGraph = self.call_stacks[stack_indices[1]]
-                
-                if save_path is None:
-                    bwd_stack_save_path = main_stack_save_path = None
-                else:
-                    bwd_stack_save_path = f'{save_path}_backward_rank{rank}'
-                    main_stack_save_path = f'{save_path}_forward_rank{rank}'
-                
-                main_stack.print_call_stack(save_path=main_stack_save_path)
-                # bwd_stack.print_call_stack(save_path=bwd_stack_save_path)
-                
-        # for call_stack in self.call_stacks:
-            # call_stack.print_call_stack(save_path)
-            
+    def get_first_stack_on_rank(self, rank):
+        _, first_call_stack = next(iter(self.rank_to_stacks[rank].items()))
+        return first_call_stack
     
-    def save_call_graph_to_trace(self):
-        # for call_stack in self.call_stacks:
-        #     call_stack.save_call_stack_to_dataframe()
+    def print_call_graph(self, save_path=None):
         for rank in self.ranks:
-            stacks: pd.DataFrame = self.mapping.loc[
-                self.mapping["rank"].eq(rank) & self.mapping["label"].isin(["bwd", "main"])
-            ].sort_values("label")
+            if save_path is None:
+                save_path_per_rank = None
+            else:
+                save_path_per_rank = add_rank_to_filename(save_path, rank)
             
-            if isinstance(stacks, pd.DataFrame) and stacks.shape[0] == 2:
-                stack_indices: List[int] = stacks["stack_index"].to_list()
-                bwd_stack: CallStackGraph = self.call_stacks[stack_indices[0]]
-                main_stack: CallStackGraph = self.call_stacks[stack_indices[1]]
-                                
-                main_stack.save_call_graph_to_trace()
+            first_stack = self.get_first_stack_on_rank(rank)
+            first_stack.print_call_stack(save_path=save_path_per_rank)
                 
     def mark_send_recv_direction(self):
-        # for call_stack in self.call_stacks:
-        #     call_stack.mark_send_recv_direction()
         for rank in self.ranks:
-            stacks: pd.DataFrame = self.mapping.loc[
-                self.mapping["rank"].eq(rank) & self.mapping["label"].isin(["bwd", "main"])
-            ].sort_values("label")
-            
-            if isinstance(stacks, pd.DataFrame) and stacks.shape[0] == 2:
-                stack_indices: List[int] = stacks["stack_index"].to_list()
-                bwd_stack: CallStackGraph = self.call_stacks[stack_indices[0]]
-                main_stack: CallStackGraph = self.call_stacks[stack_indices[1]]
-                
-                main_stack.mark_send_recv_direction()
+            first_stack = self.get_first_stack_on_rank(rank)
+            first_stack.mark_send_recv_direction()
     
     def rename_duplicate_children(self):
-        # for call_stack in self.call_stacks:
-        #     call_stack.rename_duplicate_children()
         for rank in self.ranks:
-            stacks: pd.DataFrame = self.mapping.loc[
-                self.mapping["rank"].eq(rank) & self.mapping["label"].isin(["bwd", "main"])
-            ].sort_values("label")
-            
-            if isinstance(stacks, pd.DataFrame) and stacks.shape[0] == 2:
-                stack_indices: List[int] = stacks["stack_index"].to_list()
-                bwd_stack: CallStackGraph = self.call_stacks[stack_indices[0]]
-                main_stack: CallStackGraph = self.call_stacks[stack_indices[1]]
-                
-                main_stack.rename_duplicate_children()
+            first_stack = self.get_first_stack_on_rank(rank)
+            first_stack.rename_duplicate_children()
     
     def assign_full_names(self):
-        # for call_stack in self.call_stacks:
-        #     call_stack.assign_full_names()
         for rank in self.ranks:
-            stacks: pd.DataFrame = self.mapping.loc[
-                self.mapping["rank"].eq(rank) & self.mapping["label"].isin(["bwd", "main"])
-            ].sort_values("label")
-            
-            if isinstance(stacks, pd.DataFrame) and stacks.shape[0] == 2:
-                stack_indices: List[int] = stacks["stack_index"].to_list()
-                bwd_stack: CallStackGraph = self.call_stacks[stack_indices[0]]
-                main_stack: CallStackGraph = self.call_stacks[stack_indices[1]]
-                
-                main_stack.assign_full_names()
+            first_stack = self.get_first_stack_on_rank(rank)
+            first_stack.assign_full_names()
+    
+    def remove_duplicate_named_children(self):
+        for rank in self.ranks:
+            first_stack = self.get_first_stack_on_rank(rank)
+            first_stack.remove_duplicate_named_children()

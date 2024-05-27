@@ -260,6 +260,29 @@ def partition_files_across_directories(source_directory, target_directory, group
             find_and_create_symlinks(source_directory, sub_dir, group)
     return all_sub_dirs
 
+def add_rank_to_filename(filepath, rank):
+    # Split the file path into root and extension
+    root, ext = os.path.splitext(filepath)
+    
+    # Find the first extension to correctly insert the rank
+    base_name = os.path.basename(root)
+    dir_name = os.path.dirname(root)
+    
+    # Split the base name by the first dot, if it exists
+    if '.' in base_name:
+        parts = base_name.split('.', 1)
+        new_base_name = f"{parts[0]}_rank{rank}.{parts[1]}"
+    else:
+        new_base_name = f"{base_name}_rank{rank}"
+    
+    # Combine directory, new base name, and extension
+    if dir_name:
+        new_filename = os.path.join(dir_name, new_base_name + ext)
+    else:
+        new_filename = new_base_name + ext
+    
+    return new_filename
+
 class LogToFile:
     """
     A context manager for redirecting stdout to a file.

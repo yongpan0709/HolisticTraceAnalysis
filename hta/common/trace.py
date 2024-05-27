@@ -8,7 +8,6 @@ import gzip
 import json
 import multiprocessing as mp
 import os
-import re
 import sys
 import time
 import tracemalloc
@@ -21,7 +20,7 @@ import re
 
 from hta.common.trace_df import save_trace_df_to_file
 from hta.common.trace_file import get_trace_files
-from hta.common.trace_filter import CPUOperatorFilter, GPUKernelFilter
+from hta.common.trace_filter import CPUOperatorFilter, GPUKernelFilter, create_regex_for_prefix_match
 from hta.common.trace_parser import parse_trace_dataframe, parse_trace_dict
 from hta.common.trace_symbol_table import (
     decode_symbol_id_to_symbol_name,
@@ -33,6 +32,7 @@ from hta.configs.parser_config import ParserConfig
 from hta.utils.utils import get_mp_pool_size, normalize_path
 from hta.common.trace_filter import NameFilter, GPUKernelFilter, CompositeFilter, TimeRangeFilter
 from hta.utils.parallel_state import get_next_pipeline_rank, is_first_stage, is_last_stage
+from hta.utils.utils import add_rank_to_filename
 
 MetaData = Dict[str, Any]
 PHASE_COUNTER: str = "C"
@@ -227,13 +227,13 @@ def parse_trace_file(
     cfg = cfg or ParserConfig.get_default_cfg()
 
     meta, df, local_symbol_table = parse_trace_dataframe(trace_file_path, cfg)
-    print(f'zyy parse_trace_dataframe:  gpu = {len(df.loc[df["stream"] >= 0])}')
-    print(f'zyy after parse_trace_dataframe: ac2g={len(df.loc[df["cat"] == local_symbol_table.get_sym_id_map().get("ac2g")])}')
-    print(f'zyy after parse_trace_dataframe: cpu_op={len(df.loc[df["cat"] == local_symbol_table.get_sym_id_map().get("cpu_op")])}')
+    # print(f'zyy parse_trace_dataframe:  gpu = {len(df.loc[df["stream"] >= 0])}')
+    # print(f'zyy after parse_trace_dataframe: ac2g={len(df.loc[df["cat"] == local_symbol_table.get_sym_id_map().get("ac2g")])}')
+    # print(f'zyy after parse_trace_dataframe: cpu_op={len(df.loc[df["cat"] == local_symbol_table.get_sym_id_map().get("cpu_op")])}')
     # add fwd bwd links between CPU ops
     add_fwd_bwd_links(df)
-    print(f'zyy add_fwd_bwd_links: {len(df.loc[df["stream"] >= 0])}')
-    print(f'zyy after add_fwd_bwd_links: ac2g={len(df.loc[df["cat"] == local_symbol_table.get_sym_id_map().get("ac2g")])}')
+    # print(f'zyy add_fwd_bwd_links: {len(df.loc[df["stream"] >= 0])}')
+    # print(f'zyy after add_fwd_bwd_links: ac2g={len(df.loc[df["cat"] == local_symbol_table.get_sym_id_map().get("ac2g")])}')
 
     df = transform_correlation_to_index(df, local_symbol_table)
 
@@ -287,7 +287,7 @@ def add_fwd_bwd_links(df: pd.DataFrame) -> None:
         df_fwdbwd_end_events, how="inner", on="id", suffixes=("_start", "_end")
     )
     
-    print(f'zyy: df_fwdbwd_merged={len(df_fwdbwd_merged)}')
+    # print(f'zyy: df_fwdbwd_merged={len(df_fwdbwd_merged)}')
 
     start_indices = df_fwdbwd_merged["index_start"]
     end_indices = df_fwdbwd_merged["index_end"]
@@ -675,7 +675,6 @@ class Trace:
             filtered_gpu_kernels = gpu_kernels.merge(
                 cpu_kernels["correlation"], on="correlation", how="inner"
             )
-            print(f'zyy: filtered_gpu_kernels={len(filtered_gpu_kernels)}')
             return pd.concat([filtered_gpu_kernels, cpu_kernels], axis=0)
 
         if not profiler_steps:
@@ -790,8 +789,7 @@ class Trace:
         
         inputs = []
         for rank in effective_ranks:
-            filename, suffix = file_path.split('.', 1)
-            file_path_with_rank = f'{filename}_rank{rank}.{suffix}'
+            file_path_with_rank = add_rank_to_filename(file_path, rank)
             inputs.append([self.traces[rank], file_path_with_rank, None, self.meta_data[rank]])
         apply_function_for_parallel(inputs, save_trace_df_to_file)
     
@@ -809,7 +807,7 @@ class Trace:
         print(f'total {len(traces)} traces, and each trace has {len(first_trace_df)} items')
         print(first_trace_df['s_cat'].value_counts())
 
-class PipelineParrallelGroupTrace(Trace):
+class MegatronPipelineParrallelGroupTrace(Trace):
     def __init__(
         self,
         trace_files: Optional[Dict[int, str]] = None,
@@ -817,13 +815,32 @@ class PipelineParrallelGroupTrace(Trace):
         data_parallel_size = -1,
         tensor_parallel_size = -1,
         pipeline_parallel_size = -1,
-        num_microbatch = -1,
     ) -> None:
         super().__init__(trace_files, trace_dir)
         self.data_parallel_size = data_parallel_size
         self.tensor_parallel_size = tensor_parallel_size
         self.pipeline_parallel_size = pipeline_parallel_size
-        self.num_microbatch = num_microbatch
+        self.with_gpu_kernel = False
+    
+    def load_traces(self, include_last_profiler_step: Optional[bool] = False) -> None:
+        if self.is_parsed:
+            logger.warning("Traces are already parsed and loaded!")
+            return
+        self.parse_traces(use_multiprocessing=False)
+        
+        self.with_gpu_kernel = True
+        for rank, trace_df in self.traces.items():
+            # num_cpu_kernels = trace_df[trace_df["stream"].eq(-1)]
+            num_gpu_kernels = len(trace_df[trace_df["stream"].ne(-1)])
+            if num_gpu_kernels == 0:
+                self.with_gpu_kernel = False
+        
+        self.align_and_filter_trace(include_last_profiler_step)
+        for rank, df in self.traces.items():
+            df = self.traces[rank].set_index("index", drop=False)
+            df.index.names = [None]
+            self.traces[rank] = df
+        self.is_parsed = True
     
     @staticmethod
     def set_self_microbatch_id(trace_df):
@@ -869,23 +886,6 @@ class PipelineParrallelGroupTrace(Trace):
             self.set_self_microbatch_id(self.traces[rank])
             self.set_recv_send_microbatch_id(self.traces[rank])
             self.process_pipeline_start_end(rank, self.traces[rank])
-    
-    @staticmethod
-    def create_regex_for_prefix_match(prefixes):
-        """
-        Creates a regex pattern that matches any string starting with any of the provided prefixes.
-        
-        Parameters:
-        - prefixes (list): A list of prefixes to match at the start of a string.
-        
-        Returns:
-        - str: A regex pattern string.
-        """
-        # Escape each prefix to handle special regex characters
-        escaped_prefixes = [re.escape(prefix) for prefix in prefixes]
-        # Join the escaped prefixes with the regex OR operator '|'
-        name_pattern = '^(' + '|'.join(escaped_prefixes) + ')'
-        return name_pattern
 
     def keep_useful_span(self, trace_df):
         user_annotation_names_list = [
@@ -935,9 +935,9 @@ class PipelineParrallelGroupTrace(Trace):
             'torch::autograd::'
         ]
         
-        filter_user_annotation = NameFilter(self.create_regex_for_prefix_match(user_annotation_names_list))
-        filter_python_function = NameFilter(self.create_regex_for_prefix_match(python_function_names_list))
-        filter_cpu_op = NameFilter(self.create_regex_for_prefix_match(cpu_op_names_list))
+        filter_user_annotation = NameFilter(create_regex_for_prefix_match(user_annotation_names_list))
+        filter_python_function = NameFilter(create_regex_for_prefix_match(python_function_names_list))
+        filter_cpu_op = NameFilter(create_regex_for_prefix_match(cpu_op_names_list))
         
         trace_df_user_annotation = filter_user_annotation(trace_df[trace_df['s_cat'] == 'user_annotation'])
         trace_df_python_function = filter_python_function(trace_df[trace_df['s_cat'] == 'python_function'])
@@ -959,9 +959,8 @@ class PipelineParrallelGroupTrace(Trace):
             'send_backward_recv_forward', 
             'mccl:send', 
             'mccl:recv', 
-            'ProfilerStep'
         ]
-        filter_comm = NameFilter(self.create_regex_for_prefix_match(comm_names_list))
+        filter_comm = NameFilter(create_regex_for_prefix_match(comm_names_list))
         
         return filter_comm(trace_df)
             
@@ -974,150 +973,112 @@ class PipelineParrallelGroupTrace(Trace):
             if(ranks[i+1] == get_next_pipeline_rank(ranks[i], self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size)):
                 p2p_devices_pairs.append([ranks[i], ranks[i+1]])
         return p2p_devices_pairs 
-    
-    def get_p2p_trace_for_one_pair(self, rank_prev, rank_next):
-        trace_df_prev_orig = self.traces[rank_prev]
-        trace_df_next_orig = self.traces[rank_next]
 
-        df_p2p_forward = pd.merge(trace_df_prev_orig, trace_df_next_orig, left_on='send_next', right_on='recv_prev', how='inner', suffixes=('_on_prev', '_on_next'))
+    def get_p2p_trace_for_one_pair(self, rank_prev, rank_next):
+        """
+        Compute the point-to-point (P2P) communication times between two ranks.
+
+        Args:
+            rank_prev (int): The previous rank.
+            rank_next (int): The next rank.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing the bidirectional P2P communication times.
+        """
+        # Get the DataFrames for the given ranks
+        trace_df_prev = self.traces[rank_prev]
+        trace_df_next = self.traces[rank_next]
+
+        # Compute forward P2P communication times
+        df_p2p_forward = self._compute_p2p_forward(trace_df_prev, trace_df_next)
+        self._update_comm_time(trace_df_prev, df_p2p_forward, 'send_next', 'send_next_on_prev')
+        self._update_comm_time(trace_df_next, df_p2p_forward, 'recv_prev', 'recv_prev_on_next')
+
+        # Compute backward P2P communication times
+        df_p2p_backward = self._compute_p2p_backward(trace_df_prev, trace_df_next)
+        self._update_comm_time(trace_df_prev, df_p2p_backward, 'recv_next', 'recv_next_on_prev')
+        self._update_comm_time(trace_df_next, df_p2p_backward, 'send_prev', 'send_prev_on_next')
+
+        # Update the original DataFrames with the wait times
+        self._update_wait_time(trace_df_prev)
+        self._update_wait_time(trace_df_next)
+
+        # Concatenate the forward and backward P2P DataFrames
+        df_p2p_bidirection = pd.concat([df_p2p_forward, df_p2p_backward])
+
+        return df_p2p_bidirection
+
+    def _compute_p2p_forward(self, df_prev, df_next):
+        """
+        Compute the forward P2P communication times between two DataFrames.
+
+        Args:
+            df_prev (pd.DataFrame): The previous rank DataFrame.
+            df_next (pd.DataFrame): The next rank DataFrame.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing the forward P2P communication times.
+        """
+        df_p2p_forward = pd.merge(df_prev, df_next, left_on='send_next', right_on='recv_prev', how='inner', suffixes=('_on_prev', '_on_next'))
         df_p2p_forward = df_p2p_forward[df_p2p_forward['send_next_on_prev'] >= 0]
         df_p2p_forward['p2p_forward'] = True
         df_p2p_forward['comm_time'] = np.minimum(df_p2p_forward['dur_on_prev'], df_p2p_forward['dur_on_next'])
-        # print('df_p2p_forward')
-        # print(df_p2p_forward[['s_name_on_prev', 's_name_on_next', 'send_next_on_prev', 'recv_prev_on_next', 'dur_on_prev', 'dur_on_next', 'comm_time']].head(20))
-        # print('trace_df_prev')
-        # print(trace_df_prev_orig[['s_name', 'send_next', 'recv_next', 'send_prev', 'recv_prev', 'dur']].head(20))
-        trace_df_prev_new = pd.merge(
-            trace_df_prev_orig,
-            df_p2p_forward[['send_next_on_prev', 'comm_time']],
-            left_on='send_next',
-            right_on='send_next_on_prev',
-            how='left',
-            suffixes=('', '_new')).drop(columns='send_next_on_prev')
-        if 'comm_time_new' in trace_df_prev_new.columns:
-            trace_df_prev_new['comm_time'] = trace_df_prev_new['comm_time'].fillna(0) + trace_df_prev_new['comm_time_new'].fillna(0)
-            trace_df_prev_new = trace_df_prev_new.drop(columns='comm_time_new')
-        # print('after merge trace_df_prev')
-        # print(trace_df_prev_new[['s_name', 'send_next', 'recv_next', 'send_prev', 'recv_prev', 'dur', 'comm_time']].head(20))
-        
-        trace_df_next_new = pd.merge(
-            trace_df_next_orig,
-            df_p2p_forward[['recv_prev_on_next', 'comm_time']],
-            left_on='recv_prev',
-            right_on='recv_prev_on_next',
-            how='left',
-            suffixes=('', '_new')).drop(columns='recv_prev_on_next')
-        if 'comm_time_new' in trace_df_next_new.columns:
-            trace_df_next_new['comm_time'] = trace_df_next_new['comm_time'].fillna(0) + trace_df_next_new['comm_time_new'].fillna(0)
-            trace_df_next_new = trace_df_next_new.drop(columns='comm_time_new')
+            
+        return df_p2p_forward
 
-        df_p2p_backward = pd.merge(trace_df_prev_orig, trace_df_next_orig, left_on='recv_next', right_on='send_prev', how='inner', suffixes=('_on_prev', '_on_next'))
+    def _compute_p2p_backward(self, df_prev, df_next):
+        """
+        Compute the backward P2P communication times between two DataFrames.
+
+        Args:
+            df_prev (pd.DataFrame): The previous rank DataFrame.
+            df_next (pd.DataFrame): The next rank DataFrame.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing the backward P2P communication times.
+        """
+        df_p2p_backward = pd.merge(df_prev, df_next, left_on='recv_next', right_on='send_prev', how='inner', suffixes=('_on_prev', '_on_next'))
         df_p2p_backward = df_p2p_backward[df_p2p_backward['recv_next_on_prev'] >= 0]
         df_p2p_backward['p2p_backward'] = True
         df_p2p_backward['comm_time'] = np.minimum(df_p2p_backward['dur_on_prev'], df_p2p_backward['dur_on_next'])
-        # print('df_p2p_backward')
-        # print(df_p2p_backward[['s_name_on_prev', 's_name_on_next', 'send_next_on_prev', 'recv_prev_on_next', 'dur_on_prev', 'dur_on_next', 'comm_time']].head(20))
-        # print('trace_df_prev')
-        # print(trace_df_prev_new[['s_name', 'send_next', 'recv_next', 'send_prev', 'recv_prev', 'dur', 'comm_time']].head(20))
-        trace_df_prev_new = pd.merge(
-            trace_df_prev_new,
-            df_p2p_backward[['recv_next_on_prev', 'comm_time']],
-            left_on='recv_next',
-            right_on='recv_next_on_prev',
-            how='left',
-            suffixes=('', '_new')).drop(columns='recv_next_on_prev')
-        # print('after merge trace_df_prev')
-        # print(trace_df_prev_new[['s_name', 'send_next', 'recv_next', 'send_prev', 'recv_prev', 'recv_next_on_prev', 'dur', 'comm_time', 'comm_time_new']].head(20))
-        trace_df_prev_new['comm_time'] = trace_df_prev_new['comm_time'].fillna(0) + trace_df_prev_new['comm_time_new'].fillna(0)
-        trace_df_prev_new = trace_df_prev_new.drop(columns='comm_time_new')
+        return df_p2p_backward
 
-        trace_df_next_new = pd.merge(
-            trace_df_next_new,
-            df_p2p_backward[['send_prev_on_next', 'comm_time']],
-            left_on='send_prev',
-            right_on='send_prev_on_next',
-            how='left',
-            suffixes=('', '_new')).drop(columns='send_prev_on_next')
+    def _update_comm_time(self, original_df, p2p_df, merge_col_original, merge_col_p2p):
+        """
+        Update the communication times in the original DataFrame based on the P2P DataFrame.
 
-        trace_df_next_new['comm_time'] = trace_df_next_new['comm_time'].fillna(0) + trace_df_next_new['comm_time_new'].fillna(0)
-        trace_df_next_new = trace_df_next_new.drop(columns='comm_time_new')
+        Args:
+            original_df (pd.DataFrame): The original DataFrame to update.
+            p2p_df (pd.DataFrame): The P2P DataFrame containing the communication times.
+            merge_col_original (str): The column name in the original DataFrame to merge on.
+            merge_col_p2p (str): The column name in the P2P DataFrame to merge on.
+        """
+        # Ensure 'comm_time' column exists in the original DataFrame
+        if 'comm_time' not in original_df.columns:
+            original_df['comm_time'] = 0
 
-        trace_df_prev_orig['comm_time'] = trace_df_prev_new['comm_time']
-        trace_df_prev_orig['wait_time'] = trace_df_prev_orig['dur'] - trace_df_prev_orig['comm_time']
-        trace_df_next_orig['comm_time'] = trace_df_next_new['comm_time']
-        trace_df_next_orig['wait_time'] = trace_df_next_orig['dur'] - trace_df_next_orig['comm_time']
-        # print(trace_df_prev_orig[['dur', 'comm_time', 'wait_time']].head(20))
-        # print(trace_df_next_orig[['dur', 'comm_time', 'wait_time']].head(20))
+        # Merge the DataFrames and handle suffixes to avoid renaming issues
+        temp_df = pd.merge(
+            original_df,
+            p2p_df[[merge_col_p2p, 'comm_time']].rename(columns={'comm_time': 'comm_time_p2p'}),
+            left_on=merge_col_original,
+            right_on=merge_col_p2p,
+            how='left'
+        )
+        # Align indices of the original DataFrame with the merged DataFrame to ensure proper assignment
+        comm_tmp = temp_df['comm_time'].fillna(0) + temp_df['comm_time_p2p'].fillna(0)
+        # Update the original DataFrame with the calculated communication time
+        original_df['comm_time'] = comm_tmp.values
 
-        df_p2p_bidirection = pd.concat([df_p2p_forward, df_p2p_backward])
-        
-        return df_p2p_bidirection
-    
-    # def get_p2p_trace_for_one_pair(self, rank_prev, rank_next):
-    #     trace_df_prev_orig = self.traces[rank_prev]
-    #     trace_df_next_orig = self.traces[rank_next]
+    def _update_wait_time(self, df):
+        """
+        Update the wait times in the DataFrame based on the communication times.
 
-    #     df_p2p_forward = pd.merge(trace_df_prev_orig, trace_df_next_orig, left_on='send_next', right_on='recv_prev', how='inner', suffixes=('_on_prev', '_on_next'))
-    #     df_p2p_forward = df_p2p_forward[df_p2p_forward['send_next_on_prev'] >= 0]
-    #     df_p2p_forward['p2p_forward'] = True
-    #     df_p2p_forward['comm_time'] = np.minimum(df_p2p_forward['dur_on_prev'], df_p2p_forward['dur_on_next'])
+        Args:
+            df (pd.DataFrame): The DataFrame to update.
+        """
+        df['wait_time'] = df['dur'] - df['comm_time']
 
-    #     trace_df_prev_new = pd.merge(
-    #         trace_df_prev_orig,
-    #         df_p2p_forward[['send_next_on_prev', 'comm_time']],
-    #         left_on='send_next',
-    #         right_on='send_next_on_prev',
-    #         how='left').drop(columns='send_next_on_prev')
-    #     if 'comm_time_new' in trace_df_prev_new.columns:
-    #         trace_df_prev_new['comm_time'] = trace_df_prev_new['comm_time'].fillna(0) + trace_df_prev_new['comm_time_new'].fillna(0)
-    #         trace_df_prev_new = trace_df_prev_new.drop(columns='comm_time_new')
-        
-    #     trace_df_next_new = pd.merge(
-    #         trace_df_next_orig,
-    #         df_p2p_forward[['recv_prev_on_next', 'comm_time']],
-    #         left_on='recv_prev',
-    #         right_on='recv_prev_on_next',
-    #         how='left').drop(columns='recv_prev_on_next')
-    #     if 'comm_time_new' in trace_df_next_new.columns:
-    #         trace_df_next_new['comm_time'] = trace_df_next_new['comm_time'].fillna(0) + trace_df_next_new['comm_time_new'].fillna(0)
-    #         trace_df_next_new = trace_df_next_new.drop(columns='comm_time_new')
-
-    #     df_p2p_backward = pd.merge(trace_df_prev_orig, trace_df_next_orig, left_on='recv_next', right_on='send_prev', how='inner', suffixes=('_on_prev', '_on_next'))
-    #     df_p2p_backward = df_p2p_backward[df_p2p_backward['recv_next_on_prev'] >= 0]
-    #     df_p2p_backward['p2p_backward'] = True
-    #     df_p2p_backward['comm_time'] = np.minimum(df_p2p_backward['dur_on_prev'], df_p2p_backward['dur_on_next'])
-
-    #     trace_df_prev_new = pd.merge(
-    #         trace_df_prev_new,
-    #         df_p2p_backward[['recv_next_on_prev', 'comm_time']],
-    #         left_on='recv_next',
-    #         right_on='recv_next_on_prev',
-    #         how='left',
-    #         suffixes=('', '_new'))
-
-    #     trace_df_prev_new = trace_df_prev_new.drop(columns='recv_next_on_prev')
-    #     trace_df_prev_new['comm_time'] = trace_df_prev_new['comm_time'].fillna(0) + trace_df_prev_new['comm_time_new'].fillna(0)
-    #     trace_df_prev_new = trace_df_prev_new.drop(columns='comm_time_new')
-
-    #     trace_df_next_new = pd.merge(
-    #         trace_df_next_new,
-    #         df_p2p_backward[['send_prev_on_next', 'comm_time']],
-    #         left_on='send_prev',
-    #         right_on='send_prev_on_next',
-    #         how='left',
-    #         suffixes=('', '_new')).drop(columns='send_prev_on_next')
-
-    #     trace_df_next_new['comm_time'] = trace_df_next_new['comm_time'].fillna(0) + trace_df_next_new['comm_time_new'].fillna(0)
-    #     trace_df_next_new = trace_df_next_new.drop(columns='comm_time_new')
-
-    #     trace_df_prev_orig['comm_time'] = trace_df_prev_new['comm_time']
-    #     trace_df_prev_orig['wait_time'] = trace_df_prev_orig['dur'] - trace_df_prev_orig['comm_time']
-    #     trace_df_next_orig['comm_time'] = trace_df_next_new['comm_time']
-    #     trace_df_next_orig['wait_time'] = trace_df_next_orig['dur'] - trace_df_next_orig['comm_time']
-
-    #     df_p2p_bidirection = pd.concat([df_p2p_forward, df_p2p_backward])
-        
-    #     return df_p2p_bidirection
     
     def establish_p2p_link_on_adjacent_ranks(self):
         rank_pairs = self.get_p2p_ranks_pairs(self.get_ranks())

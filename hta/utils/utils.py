@@ -13,6 +13,8 @@ import os
 import sys
 import shutil
 from datetime import datetime
+import time
+from hta.configs.config import logger
 
 
 class KernelType(Enum):
@@ -210,10 +212,12 @@ def prepare_directory(directory_path, force_clear=False):
                     elif os.path.isdir(file_path):
                         shutil.rmtree(file_path)
                 except Exception as e:
-                    print(f'Failed to delete {file_path}. Reason: {e}')
+                    logger.error(f'Failed to delete {file_path}. Reason: {e}')
     else:
         # Create the target directory
         os.makedirs(directory_path)
+    
+    time.sleep(3)
 
 def find_and_copy_files(source_directory, target_directory, suffix_list):
     """
@@ -237,7 +241,7 @@ def find_and_create_symlinks(source_directory, target_directory, suffix_list):
     Finds files in the specified directory whose names end with numbers from the given list, and creates symbolic links for them in a new directory.
     """
     # Prepare the target directory
-    prepare_directory(target_directory, force_clear=True)
+    prepare_directory(target_directory, force_clear=False)
 
     # Iterate through the source directory and create symbolic links for matching files
     for filename in os.listdir(source_directory):
@@ -246,6 +250,9 @@ def find_and_create_symlinks(source_directory, target_directory, suffix_list):
             if name.endswith(f'_rank{suffix}') or name.startswith(f'worker{suffix}.'):
                 source_path = os.path.join(source_directory, filename)
                 target_path = os.path.join(target_directory, filename)
+                
+                if os.path.exists(target_path):
+                    os.unlink(target_path)  # Remove existing target file
                 os.symlink(source_path, target_path)
 
 def partition_files_across_directories(source_directory, target_directory, groups_list, skip=False):

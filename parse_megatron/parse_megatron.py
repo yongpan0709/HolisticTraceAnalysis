@@ -1,8 +1,6 @@
-from hta.trace_analysis import TraceAnalysis
-from hta.utils.parrallel_state import get_3d_parallel_groups, is_first_stage, is_last_stage, get_next_pipeline_rank
-from hta.utils.utils import partition_files_across_directories, LogToFile, prepare_directory
-from hta.common.trace_df import keep_target_category, keep_target_category, keep_target_category, keep_rows_starting_with_names, calculate_flops_for_trace_df, calculate_comm_volume_for_trace_df, build_call_tree, save_trace_df_to_file, mark_send_recv_direction
-from hta.common.call_stack import CallGraph 
+from hta.trace_analysis import MegatronPipelineParallelGroupTraceAnalysis
+from hta.utils.parallel_state import get_3d_parallel_groups
+from hta.utils.utils import partition_files_across_directories, prepare_directory
 from hta.configs.config import logger
 
 from mpi4py import MPI
@@ -10,436 +8,281 @@ import os
 import pickle
 import sys
 import logging
-import time
 import pandas as pd
-import multiprocessing as mp
-import numpy as np
+import pickle
+import matplotlib.pyplot as plt
+import seaborn as sns
+import shutil
 
-pd.set_option('display.max_columns', None)
-
-trace_dir = '/home/dist/yiyuan/trace_dir_7B'
-trace_dir_for_pp_group = os.path.join(trace_dir, 'pp_group')
-
-TP_SIZE = 2
-PP_SIZE = 2
-DP_SIZE = 4
-NUM_MICROBATCHES = 16
-
-def load_trace_analyer(trace_dir):
-    cache_path = os.path.join(trace_dir, 'analyzer_cache.pkl')
-    if os.path.exists(cache_path):
-        with open(cache_path, 'rb') as f:
-            analyzer = pickle.load(f)
-        print(f'analyzer has been loaded from {cache_path}')
-    else:
-        analyzer = TraceAnalysis(trace_dir=trace_dir)
-        with open(cache_path, 'wb') as f:
-            pickle.dump(analyzer, f)
-        print(f'analyzer has been saved to {cache_path}')
-    return analyzer
-
-def display_traces_info(traces):
-    first_trace_df = next(iter(traces.values()))
-    print(f'total {len(traces)} traces, and each trace has {len(first_trace_df)} items')
-    print(first_trace_df['s_cat'].value_counts())
-
-def convert_to_int(trace_df):
-    int_fields = ["pid", "tid", "ts", "dur", 'end', "index", "name", "cat", 'external_id', 'iteration']
-    for field in int_fields:
-        if field in trace_df.columns:
-            trace_df[field] = trace_df[field].astype(int)
-    return trace_df
-
-def filter_single_trace_df(trace_df):
-    trace_df['end'] = trace_df['ts'] + trace_df['dur']
-
-    trace_df = convert_to_int(trace_df)
-    trace_df_user_annotation = keep_target_category(trace_df, 'user_annotation')
-    trace_df_python_function = keep_target_category(trace_df, 'python_function')
-    trace_df_cpu_op = keep_target_category(trace_df, 'cpu_op')
-
-    trace_df_user_annotation = keep_rows_starting_with_names(trace_df_user_annotation, ['forward_step', 'backward_step', 'forward_backward_pipelining_without_interleaving', 'get_batch', 'warmup_state', 'steady_state', 'cooldown_state', 'mccl:', 'ProfilerStep', 'recv_forward', 'recv_backward', 'send_forward', 'send_backward', 'send_forward_recv_backward', 'send_backward_recv_forward'])
-    trace_df_python_function = keep_rows_starting_with_names(trace_df_python_function, ['Embedding', 'RotaryEmbedding', 'apply_rotary_pos_emb', 'ParallelAttention', 'ParallelMLP', 'get_batch', 'RmsNormBackward', 'LinearWithGradAccumulationAndAsyncCommunicationBackward', 'ColumnParallelLinear', 'RowParallelLinear', 'post_language_model_processing', 'parallel_lm_logits', 'vocab_parallel_cross_entropy', 'average_losses_across_data_parallel_group', 'ParallelTransformerLayer', 'gather_model_params', 'step'])
-    trace_df_cpu_op = keep_rows_starting_with_names(trace_df_cpu_op, ['aten::matmul', 'aten::rms_norm_forward', 'aten::scaled_dot_product_attention', 'aten::rms_norm_backward', 'aten::_scaled_dot_product_attention_flash_musa_backward', 'aten::embedding_backward'])
-
-    trace_df = pd.concat([trace_df_user_annotation, trace_df_python_function, trace_df_cpu_op])
-    
-    # trace_df['stream'] = 0
+class DistributedMegatronTraceAnalysis:
+    def __init__(self, trace_dir, tensor_parallel_size, data_parallel_size, pipeline_parallel_size):
+        self.trace_dir = trace_dir
+        self.tensor_parallel_size = tensor_parallel_size
+        self.data_parallel_size = data_parallel_size
+        self.pipeline_parallel_size = pipeline_parallel_size
         
-    return trace_df 
-
-def set_micro_batch_id(df):
-    df.sort_values(by=['ts', 'dur'], ascending=[True, False], inplace=True)
-
-    # 初始化micro_batch_id列
-    df['micro_batch_id_forward'] = -1
-    df['micro_batch_id_backward'] = -1
-
-    # 标记包含'recv_forward'和'recv_backward'的行
-    df['recv_forward'] = df['s_name'].str.contains('recv_forward').astype(int).cumsum() - 1
-    df['recv_backward'] = df['s_name'].str.contains('recv_backward').astype(int).cumsum() - 1
-
-    # 更新'micro_batch_id_forward'和'micro_batch_id_backward'
-    df.loc[df['s_name'].str.contains('forward'), 'micro_batch_id_forward'] = df['recv_forward']
-    df.loc[df['s_name'].str.contains('backward'), 'micro_batch_id_backward'] = df['recv_backward']
-
-    # 移除辅助列
-    df.drop(['recv_forward', 'recv_backward'], axis=1, inplace=True)
-
-def set_p2p_id(df):
-    df['send_prev'] = -1
-    df['send_next'] = -1
-    df['recv_prev'] = -1
-    df['recv_next'] = -1
-
-    df.loc[df['s_name'].str.contains('mccl:recv(forward)', regex=False), 'recv_prev'] = df['micro_batch_id_forward']
-    df.loc[df['s_name'].str.contains('mccl:recv(backward)', regex=False), 'recv_next'] = df['micro_batch_id_backward']
-    df.loc[df['s_name'].str.contains('mccl:send(forward)', regex=False), 'send_next'] = df['micro_batch_id_forward']
-    df.loc[df['s_name'].str.contains('mccl:send(backward)', regex=False), 'send_prev'] = df['micro_batch_id_backward']
-
-def process_pipeline_start_end(rank, df):
-    if is_first_stage(rank, TP_SIZE, PP_SIZE, DP_SIZE):
-        df.loc[df['s_name'].str.contains('recv_forward'), 'recv_prev'] = -1
-        df.loc[df['s_name'].str.contains('send_backward'), 'send_prev'] = -1
-    if is_last_stage(rank, TP_SIZE, PP_SIZE, DP_SIZE):
-        df.loc[df['s_name'].str.contains('recv_backward'), 'recv_next'] = -1
-        df.loc[df['s_name'].str.contains('send_forward'), 'send_next'] = -1
-
-def set_p2p_micro_batch_id(rank_trace_tuple):
-    rank, trace_df = rank_trace_tuple
-    set_micro_batch_id(trace_df)
-    set_p2p_id(trace_df)
-    process_pipeline_start_end(rank, trace_df)
-
-    # trace_df = remove_rows_starting_with_names(trace_df, ['forward_step', 'backward_step'])
-    # trace_df = trace_df.head(5)
-    
-    return rank, trace_df
-
-def apply_function_for_parallel(traces, function, use_multiprocessing: bool = True, need_rank: bool = False):
-    if not use_multiprocessing:
-        total_results = {}
-        for rank, trace_df in traces:
-            logger.debug(f"applying func {function.__name__} for traces on rank {rank}")
-            if need_rank:
-                result = function((rank, trace_df))
-            else:
-                result = function(trace_df)
-            total_results[rank] = result
-        logger.debug(f"finished applying func {function.__name__} for traces")
-        return total_results
-    else:
-        num_procs = min(mp.cpu_count(), len(traces))
-        logger.debug(f"parallel applying func {function.__name__} for traces using {num_procs} processes.")
-        with mp.get_context("fork").Pool(num_procs) as pool:
-            if need_rank:
-                results = pool.map(function, traces.items())
-            else:
-                results = pool.map(function, traces.values())
-            pool.close()
-            pool.join()
-        logger.debug(f"finished parallel applying func {function.__name__} for traces using {num_procs} processes.")
+        self.comm = MPI.COMM_WORLD
+        self.rank = self.comm.Get_rank()
+        self.world_size = self.comm.Get_size()
+        self.processor_name = MPI.Get_processor_name()
         
-        if need_rank:
-            return {rank: processed_df for rank, processed_df in results}
-        return {rank: processed_df for rank, processed_df in zip(traces.keys(), results)}
-
-# def get_p2p_trace_for_one_pair(rank_df_tuple):
-#     rank_prev = rank_df_tuple[0]
-#     trace_df_prev_orig = rank_df_tuple[1][0]
-#     trace_df_next_orig = rank_df_tuple[1][1]
-
-#     p2p_forward_pd = pd.merge(trace_df_prev_orig, trace_df_next_orig, left_on='send_next', right_on='recv_prev', how='inner', suffixes=('_on_prev', '_on_next'))
-#     p2p_forward_pd = p2p_forward_pd[p2p_forward_pd['send_next_on_prev'] >= 0]
-#     p2p_forward_pd['p2p_forward'] = True
-#     p2p_forward_pd['comm_time'] = np.minimum(p2p_forward_pd['dur_on_prev'], p2p_forward_pd['dur_on_next'])
-#     print('p2p_forward_pd')
-#     print(p2p_forward_pd[['s_name_on_prev', 's_name_on_next', 'send_next_on_prev', 'recv_prev_on_next', 'dur_on_prev', 'dur_on_next', 'comm_time']].head(20))
-#     print('trace_df_prev')
-#     print(trace_df_prev_orig[['s_name', 'send_next', 'recv_next', 'send_prev', 'recv_prev', 'dur']].head(20))
-#     trace_df_prev_new = pd.merge(
-#         trace_df_prev_orig,
-#         p2p_forward_pd[['send_next_on_prev', 'comm_time']],
-#         left_on='send_next',
-#         right_on='send_next_on_prev',
-#         how='left').drop(columns='send_next_on_prev')
-#     # print('after merge trace_df_prev')
-#     # print(trace_df_prev_new[['s_name', 'send_next', 'recv_next', 'send_prev', 'recv_prev', 'send_next_on_prev', 'dur', 'comm_time']].head(20))
-#     # trace_df_prev = trace_df_prev.drop(columns='send_next_on_prev')
+        self.setup_dirs()
+        self.setup_logging()
+        self.init_pp_group_sub_dirs()
+        self.assign_analysis_tasks()
     
-#     trace_df_next_new = pd.merge(
-#         trace_df_next_orig,
-#         p2p_forward_pd[['recv_prev_on_next', 'comm_time']],
-#         left_on='recv_prev',
-#         right_on='recv_prev_on_next',
-#         how='left').drop(columns='recv_prev_on_next')
-
-#     p2p_backward_pd = pd.merge(trace_df_prev_orig, trace_df_next_orig, left_on='recv_next', right_on='send_prev', how='inner', suffixes=('_on_prev', '_on_next'))
-#     p2p_backward_pd = p2p_backward_pd[p2p_backward_pd['recv_next_on_prev'] >= 0]
-#     p2p_backward_pd['p2p_backward'] = True
-#     p2p_backward_pd['comm_time'] = np.minimum(p2p_backward_pd['dur_on_prev'], p2p_backward_pd['dur_on_next'])
-#     print('p2p_backward_pd')
-#     print(p2p_backward_pd[['s_name_on_prev', 's_name_on_next', 'send_next_on_prev', 'recv_prev_on_next', 'dur_on_prev', 'dur_on_next', 'comm_time']].head(20))
-#     print('trace_df_prev')
-#     print(trace_df_prev_new[['s_name', 'send_next', 'recv_next', 'send_prev', 'recv_prev', 'dur', 'comm_time']].head(20))
-#     trace_df_prev_new = pd.merge(
-#         trace_df_prev_new,
-#         p2p_backward_pd[['recv_next_on_prev', 'comm_time']],
-#         left_on='recv_next',
-#         right_on='recv_next_on_prev',
-#         how='left',
-#         suffixes=('', '_new'))
-#     print('after merge trace_df_prev')
-#     print(trace_df_prev_new[['s_name', 'send_next', 'recv_next', 'send_prev', 'recv_prev', 'recv_next_on_prev', 'dur', 'comm_time', 'comm_time_new']].head(20))
-#     trace_df_prev_new = trace_df_prev_new.drop(columns='recv_next_on_prev')
-#     trace_df_prev_new['comm_time'] = trace_df_prev_new['comm_time'].fillna(0) + trace_df_prev_new['comm_time_new'].fillna(0)
-#     trace_df_prev_new = trace_df_prev_new.drop(columns='comm_time_new')
-
-#     trace_df_next_new = pd.merge(
-#         trace_df_next_new,
-#         p2p_backward_pd[['send_prev_on_next', 'comm_time']],
-#         left_on='send_prev',
-#         right_on='send_prev_on_next',
-#         how='left',
-#         suffixes=('', '_new')).drop(columns='send_prev_on_next')
-
-#     trace_df_next_new['comm_time'] = trace_df_next_new['comm_time'].fillna(0) + trace_df_next_new['comm_time_new'].fillna(0)
-#     trace_df_next_new = trace_df_next_new.drop(columns='comm_time_new')
-
-#     trace_df_prev_orig['comm_time'] = trace_df_prev_new['comm_time']
-#     trace_df_prev_orig['wait_time'] = trace_df_prev_orig['dur'] - trace_df_prev_orig['comm_time']
-#     trace_df_next_orig['comm_time'] = trace_df_next_new['comm_time']
-#     trace_df_next_orig['wait_time'] = trace_df_next_orig['dur'] - trace_df_next_orig['comm_time']
-#     print(trace_df_prev_orig[['dur', 'comm_time', 'wait_time']].head(20))
-#     print(trace_df_next_orig[['dur', 'comm_time', 'wait_time']].head(20))
-
-#     all_p2p_pd = pd.concat([p2p_forward_pd, p2p_backward_pd])
+    def post_process(self):
+        if self.rank == 0:
+            self.move_output_dir()
     
-#     return rank_prev, all_p2p_pd 
+    def move_output_dir(self):
+        src_dir = self.trace_dir_pp_group
+        dest_dir = self.output_dir
 
-# def get_p2p_devices_pairs(ranks, traces):
-#     if len(ranks) < 2: return {}
-#     ranks_sorted = sorted(ranks)
-#     p2p_devices_pairs = {}
-#     for i in range(len(ranks_sorted) - 1):
-#         if(ranks[i+1] == get_next_pipeline_rank(ranks[i], TP_SIZE, PP_SIZE, DP_SIZE)):
-#             p2p_devices_pairs[ranks[i]] = [traces[ranks[i]], traces[ranks[i+1]]]
-#     return p2p_devices_pairs
+        # List to store the full paths of found 'output' directories
+        output_dirs = []
 
-def get_p2p_trace_for_one_pair(trace_df_prev, trace_df_next):
-    trace_df_prev_orig = trace_df_prev
-    trace_df_next_orig = trace_df_next
+        # Recursively search for all 'output' directories
+        for root, dirs, files in os.walk(src_dir):
+            for dir_name in dirs:
+                if dir_name == 'output':
+                    # Construct the full path to the 'output' directory
+                    output_dir_path = os.path.join(root, dir_name)
+                    # Add the 'output' directory path to the list
+                    output_dirs.append(output_dir_path)
 
-    p2p_forward_pd = pd.merge(trace_df_prev_orig, trace_df_next_orig, left_on='send_next', right_on='recv_prev', how='inner', suffixes=('_on_prev', '_on_next'))
-    p2p_forward_pd = p2p_forward_pd[p2p_forward_pd['send_next_on_prev'] >= 0]
-    p2p_forward_pd['p2p_forward'] = True
-    p2p_forward_pd['comm_time'] = np.minimum(p2p_forward_pd['dur_on_prev'], p2p_forward_pd['dur_on_next'])
-    # print('p2p_forward_pd')
-    # print(p2p_forward_pd[['s_name_on_prev', 's_name_on_next', 'send_next_on_prev', 'recv_prev_on_next', 'dur_on_prev', 'dur_on_next', 'comm_time']].head(20))
-    # print('trace_df_prev')
-    # print(trace_df_prev_orig[['s_name', 'send_next', 'recv_next', 'send_prev', 'recv_prev', 'dur']].head(20))
-    trace_df_prev_new = pd.merge(
-        trace_df_prev_orig,
-        p2p_forward_pd[['send_next_on_prev', 'comm_time']],
-        left_on='send_next',
-        right_on='send_next_on_prev',
-        how='left').drop(columns='send_next_on_prev')
-    # print('after merge trace_df_prev')
-    # print(trace_df_prev_new[['s_name', 'send_next', 'recv_next', 'send_prev', 'recv_prev', 'send_next_on_prev', 'dur', 'comm_time']].head(20))
-    # trace_df_prev = trace_df_prev.drop(columns='send_next_on_prev')
+        
+        # Iterate over the found 'output' directories and perform the move operation
+        for output_dir in output_dirs:
+            # Get the name of the parent directory of 'output', which should be like p1, p2, p3, etc.
+            parent_dir_name = os.path.basename(os.path.dirname(output_dir))
+            
+            # Construct the destination path based on the parent directory name
+            dest_subpath = os.path.join(dest_dir, parent_dir_name)
+            
+            # Ensure the destination subpath exists, create it if it doesn't
+            os.makedirs(dest_subpath, exist_ok=True)
+            
+            # Move the 'output' directory to the destination path
+            shutil.move(output_dir, dest_subpath)
+            logger.info(f"Moved: {output_dir} -> {dest_subpath}")
+
+        logger.info("All 'output' directories have been moved.")
     
-    trace_df_next_new = pd.merge(
-        trace_df_next_orig,
-        p2p_forward_pd[['recv_prev_on_next', 'comm_time']],
-        left_on='recv_prev',
-        right_on='recv_prev_on_next',
-        how='left').drop(columns='recv_prev_on_next')
-
-    p2p_backward_pd = pd.merge(trace_df_prev_orig, trace_df_next_orig, left_on='recv_next', right_on='send_prev', how='inner', suffixes=('_on_prev', '_on_next'))
-    p2p_backward_pd = p2p_backward_pd[p2p_backward_pd['recv_next_on_prev'] >= 0]
-    p2p_backward_pd['p2p_backward'] = True
-    p2p_backward_pd['comm_time'] = np.minimum(p2p_backward_pd['dur_on_prev'], p2p_backward_pd['dur_on_next'])
-    # print('p2p_backward_pd')
-    # print(p2p_backward_pd[['s_name_on_prev', 's_name_on_next', 'send_next_on_prev', 'recv_prev_on_next', 'dur_on_prev', 'dur_on_next', 'comm_time']].head(20))
-    # print('trace_df_prev')
-    # print(trace_df_prev_new[['s_name', 'send_next', 'recv_next', 'send_prev', 'recv_prev', 'dur', 'comm_time']].head(20))
-    trace_df_prev_new = pd.merge(
-        trace_df_prev_new,
-        p2p_backward_pd[['recv_next_on_prev', 'comm_time']],
-        left_on='recv_next',
-        right_on='recv_next_on_prev',
-        how='left',
-        suffixes=('', '_new'))
-    # print('after merge trace_df_prev')
-    # print(trace_df_prev_new[['s_name', 'send_next', 'recv_next', 'send_prev', 'recv_prev', 'recv_next_on_prev', 'dur', 'comm_time', 'comm_time_new']].head(20))
-    trace_df_prev_new = trace_df_prev_new.drop(columns='recv_next_on_prev')
-    trace_df_prev_new['comm_time'] = trace_df_prev_new['comm_time'].fillna(0) + trace_df_prev_new['comm_time_new'].fillna(0)
-    trace_df_prev_new = trace_df_prev_new.drop(columns='comm_time_new')
-
-    trace_df_next_new = pd.merge(
-        trace_df_next_new,
-        p2p_backward_pd[['send_prev_on_next', 'comm_time']],
-        left_on='send_prev',
-        right_on='send_prev_on_next',
-        how='left',
-        suffixes=('', '_new')).drop(columns='send_prev_on_next')
-
-    trace_df_next_new['comm_time'] = trace_df_next_new['comm_time'].fillna(0) + trace_df_next_new['comm_time_new'].fillna(0)
-    trace_df_next_new = trace_df_next_new.drop(columns='comm_time_new')
-
-    trace_df_prev_orig['comm_time'] = trace_df_prev_new['comm_time']
-    trace_df_prev_orig['wait_time'] = trace_df_prev_orig['dur'] - trace_df_prev_orig['comm_time']
-    trace_df_next_orig['comm_time'] = trace_df_next_new['comm_time']
-    trace_df_next_orig['wait_time'] = trace_df_next_orig['dur'] - trace_df_next_orig['comm_time']
-    # print(trace_df_prev_orig[['dur', 'comm_time', 'wait_time']].head(20))
-    # print(trace_df_next_orig[['dur', 'comm_time', 'wait_time']].head(20))
-
-    all_p2p_pd = pd.concat([p2p_forward_pd, p2p_backward_pd])
+    def setup_dirs(self):
+        self.trace_dir_pp_group = 'trace'
+        self.output_dir = 'output'
+        self.stragglers_dir = os.path.join(self.output_dir, 'stragglers')
+        self.log_dir = 'log'
+        prepare_directory(self.trace_dir_pp_group, force_clear=False)
+        prepare_directory(self.log_dir, force_clear=True)
+        prepare_directory(self.output_dir, force_clear=True)
+        prepare_directory(self.stragglers_dir, force_clear=True)
     
-    return all_p2p_pd, trace_df_prev_orig, trace_df_next_orig
+    def setup_logging(self):
+        log_filename = os.path.join(self.log_dir, f'log_rank_{self.rank}.log')
+        logging.basicConfig(
+            filename=log_filename,
+            filemode='w',
+            level=logging.DEBUG,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        self.logger = logger
+        self.logger.info(f'Process {self.rank} on {self.processor_name} started logging.')
 
-def get_p2p_ranks_pairs(ranks):
-    if len(ranks) < 2: return []
-    ranks_sorted = sorted(ranks)
-    p2p_devices_pairs = []
-    for i in range(len(ranks_sorted) - 1):
-        if(ranks[i+1] == get_next_pipeline_rank(ranks[i], TP_SIZE, PP_SIZE, DP_SIZE)):
-            p2p_devices_pairs.append([ranks[i], ranks[i+1]])
-            # p2p_devices_pairs[ranks[i]] = [traces[ranks[i]], traces[ranks[i+1]]]
-    return p2p_devices_pairs 
+    def init_pp_group_sub_dirs(self):
+        self.logger.info('Initializing pipeline parallel group subdirectories.')
+        self.all_data_parallel_group_ranks, \
+        self.all_tensor_parallel_group_ranks, \
+        self.all_pipeline_parallel_group_ranks = get_3d_parallel_groups(
+            self.tensor_parallel_size, 
+            self.pipeline_parallel_size, 
+            self.data_parallel_size
+        )
+        
+        trace_dir_for_pp_group = os.path.join(self.trace_dir_pp_group, 'pp_group')
+        self.all_pp_group_sub_dirs = partition_files_across_directories(
+            self.trace_dir, 
+            trace_dir_for_pp_group, 
+            self.all_pipeline_parallel_group_ranks, 
+            skip=(self.rank != 0)
+        )
 
-def combine_into_one_trace(traces_dict: dict):
-    all_trace_dfs = []
-    for rank, trace_df in traces_dict.items():
-        all_trace_dfs.append(trace_df)
-    trace_df = pd.concat(all_trace_dfs, ignore_index=True)
-    return trace_df
-
-def process_p2p_relation(trace):
-    rank_pairs = get_p2p_ranks_pairs(trace.get_ranks())
-    all_p2p_pd = {}
-    for rank_prev, rank_next in rank_pairs:
-        p2p_pd, trace_df_prev_new, trace_df_next_new = get_p2p_trace_for_one_pair(trace.traces[rank_prev], trace.traces[rank_next])
-        all_p2p_pd[rank_prev] = p2p_pd
-        trace.traces[rank_prev] = trace_df_prev_new
-        trace.traces[rank_next] = trace_df_next_new
-    return all_p2p_pd
-
-def avg_time(trace_df, name, col='s_name'):
-    return trace_df[trace_df[col] == name]['dur'].mean()
-
-def get_report_for_pp_group(trace):
-    output_df = pd.DataFrame()
-    for rank, trace_df in trace.traces.items():
-        sorted_trace_df = trace_df.sort_values(by=['ts', 'dur'], ascending=[True, False])
-        time_per_batch = keep_rows_starting_with_names(sorted_trace_df, ['ProfilerStep'])['dur'].mean()
-
-        all_forward_steps_df = keep_rows_starting_with_names(sorted_trace_df, ['forward_step'])
-        steady_forward_steps_df = all_forward_steps_df.iloc[PP_SIZE+1:-1]
-        forward_step_time = steady_forward_steps_df['dur'].mean()
-
-        all_backward_steps_df = keep_rows_starting_with_names(sorted_trace_df, ['backward_step'])
-        steady_backward_steps_df = all_backward_steps_df.iloc[1:-PP_SIZE-1]
-        backward_step_time = steady_backward_steps_df['dur'].mean()
-
-        all_p2p_dfs = keep_rows_starting_with_names(sorted_trace_df, ['mccl:send', 'mccl:recv'])
-        total_comm_time = all_p2p_dfs['comm_time'].sum()
-        total_wait_time = all_p2p_dfs['wait_time'].sum()
-        total_bubble_time = (PP_SIZE - 1) * (forward_step_time + backward_step_time) 
-
-        total_compute_time = NUM_MICROBATCHES * (forward_step_time + backward_step_time)
-
-        info_per_rank = {
-            'rank': rank,
-            'time_per_batch': f'{time_per_batch/1000}ms',
-            'microbatch_num': NUM_MICROBATCHES,
-            'forward_step_time': f'{forward_step_time/1000}ms',
-            'backward_step_time': f'{backward_step_time/1000}ms',
-            'time_per_microbatch': f'{(forward_step_time+backward_step_time)/1000}ms',
-            'total_comm_time': f'{total_comm_time/1000}ms',
-            'total_wait_time': f'{total_wait_time/1000}ms',
-            'total_bubble_time': f'{total_bubble_time/1000}ms',
-            'total_compute_time': f'{total_compute_time/1000}ms',
-            'comp_time_ratio': total_compute_time / time_per_batch,
-            'bubble_time_ratio': total_bubble_time / time_per_batch,
-            'wait_time_ratio': total_wait_time / time_per_batch
-        }
-
-        output_df[len(output_df)] = info_per_rank
+        self.comm.barrier()
+        self.logger.info('Initialization of pipeline parallel group subdirectories completed.')
     
-    return output_df
+    def assign_analysis_tasks(self):
+        self.logger.info('Assigning analysis tasks.')
+        num_folders = len(self.all_pp_group_sub_dirs)
+        num_folders_per_process = num_folders // self.world_size
+        remainder = num_folders % self.world_size
+        
+        if self.rank < remainder:
+            start_index = self.rank * (num_folders_per_process + 1)
+            end_index = start_index + num_folders_per_process + 1
+        else:
+            start_index = remainder * (num_folders_per_process + 1) + (self.rank - remainder) * num_folders_per_process
+            end_index = start_index + num_folders_per_process
+        
+        self.assigned_folders = self.all_pp_group_sub_dirs[start_index:end_index]
+        self.logger.info(f'Assigned folders: {self.assigned_folders}')
 
-def keep_only_comm_event(trace_df):
-    trace_df_comm = keep_rows_starting_with_names(trace_df, ['forward_step', 'backward_step', 'recv_forward', 'recv_backward', 'send_forward', 'send_backward', 'send_forward_recv_backward', 'send_backward_recv_forward', 'mccl:send', 'mccl:recv', 'ProfilerStep'])
-    trace_df_comm = mark_send_recv_direction(trace_df_comm)
-    return trace_df_comm
-
-def process_single_pp_group(trace_dir):
-    output_dir = os.path.join(trace_dir, 'output')
-    prepare_directory(output_dir, force_clear=True)
+    def load_trace_analyzer(self, trace_dir):
+        cache_path = os.path.join(trace_dir, 'analyzer_cache.pkl')
+        if os.path.exists(cache_path):
+            with open(cache_path, 'rb') as f:
+                analyzer = pickle.load(f)
+            self.logger.info(f'Analyzer loaded from {cache_path}')
+        else:
+            analyzer = MegatronPipelineParallelGroupTraceAnalysis(trace_dir=trace_dir, data_parallel_size=self.data_parallel_size, tensor_parallel_size=self.tensor_parallel_size, pipeline_parallel_size=self.pipeline_parallel_size)
+            with open(cache_path, 'wb') as f:
+                pickle.dump(analyzer, f)
+            self.logger.info(f'Analyzer saved to {cache_path}')
+        return analyzer
     
-    analyzer = load_trace_analyer(trace_dir)
-    analyzer.t.decode_symbol_ids()
-    display_traces_info(analyzer.t.traces)
-    analyzer.t.traces = analyzer.t.parallel_apply(filter_single_trace_df)
-    analyzer.t.save_traces('after_filter.json', ranks=[0])
-    analyzer.t.traces = analyzer.t.parallel_apply(calculate_comm_volume_for_trace_df)
-    analyzer.t.traces = analyzer.t.parallel_apply(calculate_flops_for_trace_df)
-    all_call_tree = analyzer.t.parallel_apply(build_call_tree)
-    for rank, call_tree in all_call_tree.items():
-        call_tree.print_tree(f'{output_dir}/result_rank{rank}.txt')
-    analyzer.t.traces = analyzer.t.parallel_apply(keep_only_comm_event) 
-    analyzer.t.traces = analyzer.t.parallel_apply(set_p2p_micro_batch_id, need_rank=True)
+    def process_single_pp_group(self, trace_dir):
+        output_dir = os.path.join(trace_dir, 'output')
+        prepare_directory(output_dir, force_clear=True)
+        
+        analyzer_single_pp_group = self.load_trace_analyzer(trace_dir)
+        analyzer_single_pp_group.analyze_pipeline_parallel()
+        
+        return analyzer_single_pp_group
+    
+    def analyze(self):
+        self.analysis_list = []
+        for folder in self.assigned_folders:
+            analyzer_single_pp_group = self.process_single_pp_group(folder)
+            self.analysis_list.append(analyzer_single_pp_group)
+        self.gather_infos_from_all_ranks()
+        self.analyze_anomalies()
+        self.post_process()
+    
+    def gather_infos_from_all_ranks(self):
+        self.logger.info('Gathering information from all ranks.')
+        
+        # 序列化发送的数据
+        send_data = pickle.dumps(self.analysis_list)
+        send_data_size = len(send_data)
 
-    # all_p2p_devices_pairs = get_p2p_devices_pairs(analyzer.t.get_ranks(), analyzer.t.traces)
-    # p2p_comm_traces = apply_function_for_parallel(all_p2p_devices_pairs, get_p2p_trace_for_one_pair, need_rank=True)
-    p2p_comm_traces = process_p2p_relation(analyzer.t)
-    all_call_tree_only_comm = analyzer.t.parallel_apply(build_call_tree)
-    for rank, call_tree in all_call_tree_only_comm.items():
-        call_tree.print_tree(f'{output_dir}/result_only_comm_rank{rank}.txt')
+        # 收集每个进程发送的数据大小
+        send_counts = self.comm.gather(send_data_size, root=0)
+        
+        # 根进程准备接收缓冲区和偏移量
+        if self.rank == 0:
+            recv_data = bytearray(sum(send_counts))
+            recv_displs = [sum(send_counts[:i]) for i in range(self.world_size)]
+        else:
+            recv_data = None
+            recv_displs = None
 
-    analyzer.t.p2p_flow_events_df = combine_into_one_trace(p2p_comm_traces)
-    analyzer.t.trace_df_only_comm_for_all_ranks = combine_into_one_trace(analyzer.t.traces)
+        # 使用 MPI_Gatherv 收集所有进程的数据
+        self.comm.Gatherv(send_data, [recv_data, send_counts, recv_displs, MPI.BYTE], root=0)
 
-    save_trace_df_to_file(analyzer.t.trace_df_only_comm_for_all_ranks, f'{output_dir}/trace_only_comm_all_ranks_with_flow.json', p2p_comm_flow_df=analyzer.t.p2p_flow_events_df)
-    output_df = get_report_for_pp_group(analyzer.t)
-    print(output_df)
-    output_df.to_csv(f'{output_dir}/output.csv', header=True)
-    # analyzer.t.call_graph = CallGraph(analyzer.t)
-    # print(analyzer.t.call_graph)
+        if self.rank == 0:
+            # 根进程反序列化并合并数据
+            self.total_analysis_lists = []
+            for i in range(self.world_size):
+                start_index = recv_displs[i]
+                end_index = start_index + send_counts[i]
+                data_chunk = recv_data[start_index:end_index]
+                analysis_list = pickle.loads(data_chunk)
+                self.total_analysis_lists.extend(analysis_list)
+
+            self.logger.info(f'Total analysis lists gathered: {len(self.total_analysis_lists)}')
+            self.total_traces_list = [analysis.t.traces for analysis in self.total_analysis_lists]
+            self.total_trace_df = self.combine_traces()
+        else:
+            self.total_analysis_lists = None
+            self.total_traces_list = None
+            self.total_trace_df = None
+    
+    def combine_traces(self):
+        for trace in self.total_traces_list:
+            for pp_stage_id, rank in enumerate(sorted(trace.keys())):
+                trace_df = trace[rank]
+                trace_df['rank'] = rank
+                trace_df['pp_stage'] = pp_stage_id
+        
+        trace_dfs_list = [trace_df for trace in self.total_traces_list for trace_df in list(trace.values())]
+        return pd.concat(trace_dfs_list)
+    
+    def analyze_anomalies(self):
+        if self.total_trace_df is None:
+            return
+        
+        self.detect_anomalies()
+        self.plot_anomalies()
+        
+    def detect_anomalies(self, threshold=2):
+        # 计算每个full_name组的均值和标准差
+        mean_std_df = self.total_trace_df.groupby('full_name')['dur'].agg(['mean', 'std']).reset_index()
+        # 计算异常值的阈值
+        mean_std_df['lower_bound'] = mean_std_df['mean'] - threshold * mean_std_df['std']
+        mean_std_df['upper_bound'] = mean_std_df['mean'] + threshold * mean_std_df['std']
+        
+        # 标记异常值
+        self.total_trace_df = self.total_trace_df.merge(mean_std_df, on='full_name', suffixes=('', '_group'))
+        self.total_trace_df['is_anomaly'] = ((self.total_trace_df['dur'] < self.total_trace_df['lower_bound']) |
+                                            (self.total_trace_df['dur'] > self.total_trace_df['upper_bound']))
+        self.anomaly_status = self.total_trace_df['is_anomaly']
+    
+    def plot_anomalies(self):
+        if self.anomaly_status is None:
+            self.logger.info("Anomalies have not been detected. Please run detect_anomalies_std first.")
+            return
+        
+        spans_with_anomalies = self.total_trace_df[self.anomaly_status].groupby('full_name').any().reset_index()
+        num_spans_with_anomalies = spans_with_anomalies['is_anomaly'].sum()
+        
+        if num_spans_with_anomalies == 0:
+            self.logger.info("No anomalies found.")
+            return
+        
+        for _, row in spans_with_anomalies.iterrows():
+            if row['is_anomaly']:
+                subset = self.total_trace_df[self.total_trace_df['full_name'] == row['full_name']]
+                
+                # 根据'rank'列对subset进行排序
+                subset = subset.sort_values(by='rank')
+                
+                # 创建一个新的图和轴对象
+                fig, ax = plt.subplots(figsize=(12, 6))
+                
+                # 根据是否为异常值分配颜色
+                colors = ['red' if x else 'blue' for x in subset['is_anomaly']]
+                
+                # 绘制条形图，使用'rank'作为x轴，'dur'作为y轴
+                sns.barplot(x='rank', y='dur', data=subset, palette=colors, ax=ax)
+                
+                # 设置图表标题
+                ax.set_title(f'{row["full_name"]}')
+                
+                # 设置x轴的标签为排序后的'rank'列的值
+                ax.set_xticklabels(subset['rank'].astype(str), rotation=45)  # rotation参数可以调整标签的旋转角度
+                
+                # 设置y轴标签
+                ax.set_ylabel('Duration')
+                
+                # 调整布局以适应标签
+                plt.tight_layout()
+                
+                # 保存图形到文件，文件名以'full_name'为依据
+                filename = f"{row['full_name'].replace('/', '.')}.png"  # 替换'/'以避免文件名问题
+                filename = os.path.join(self.stragglers_dir, filename)
+                plt.savefig(filename)
+                
+                # 关闭图形以释放内存
+                plt.close(fig)
+        
 
 def main():
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
-    processor_name = MPI.Get_processor_name()
-
-    # 为每个进程创建一个独立的日志文件
-    log_filename = f"log_process_{rank}.txt"
-    with LogToFile(filepath=log_filename):
-        print(f"Process {rank} out of {size} on {processor_name}")
-        logging.basicConfig(level=logging.DEBUG, filename=log_filename, filemode='w')
-        all_data_parallel_group_ranks, all_tensor_parallel_group_ranks, all_pipeline_parallel_group_ranks = get_3d_parallel_groups(TP_SIZE, PP_SIZE, DP_SIZE)
-        all_pp_group_sub_dirs = partition_files_across_directories(trace_dir, trace_dir_for_pp_group, all_pipeline_parallel_group_ranks, skip=(not rank == 0))
-        time.sleep(3)
-
-        num_folders = len(all_pp_group_sub_dirs)
-        folders_per_process = num_folders // size
-        remainder = num_folders % size
-
-        # 为前 'remainder' 个进程分配额外的一个文件夹
-        if rank < remainder:
-            start_index = rank * (folders_per_process + 1)
-            end_index = start_index + folders_per_process + 1
-        else:
-            start_index = remainder * (folders_per_process + 1) + (rank - remainder) * folders_per_process
-            end_index = start_index + folders_per_process
-
-        assigned_folders = all_pp_group_sub_dirs[start_index:end_index]
-        print(f'Process {rank} on {processor_name}: assigned_folders={assigned_folders}')
-
-        for folder in assigned_folders:
-            process_single_pp_group(folder)
+    TP_SIZE = 2
+    PP_SIZE = 4
+    DP_SIZE = 2
+    trace_dir = '/home/dist/yiyuan/trace_dir_llama7b_blocking'
+    dist_megatron_analysis = DistributedMegatronTraceAnalysis(trace_dir, TP_SIZE, DP_SIZE, PP_SIZE)
+    dist_megatron_analysis.analyze()
 
 if __name__ == '__main__':
     main()

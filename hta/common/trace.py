@@ -227,14 +227,8 @@ def parse_trace_file(
     cfg = cfg or ParserConfig.get_default_cfg()
 
     meta, df, local_symbol_table = parse_trace_dataframe(trace_file_path, cfg)
-    # print(f'zyy parse_trace_dataframe:  gpu = {len(df.loc[df["stream"] >= 0])}')
-    # print(f'zyy after parse_trace_dataframe: ac2g={len(df.loc[df["cat"] == local_symbol_table.get_sym_id_map().get("ac2g")])}')
-    # print(f'zyy after parse_trace_dataframe: cpu_op={len(df.loc[df["cat"] == local_symbol_table.get_sym_id_map().get("cpu_op")])}')
     # add fwd bwd links between CPU ops
     add_fwd_bwd_links(df)
-    # print(f'zyy add_fwd_bwd_links: {len(df.loc[df["stream"] >= 0])}')
-    # print(f'zyy after add_fwd_bwd_links: ac2g={len(df.loc[df["cat"] == local_symbol_table.get_sym_id_map().get("ac2g")])}')
-
     df = transform_correlation_to_index(df, local_symbol_table)
 
     add_iteration(df, local_symbol_table)
@@ -286,8 +280,6 @@ def add_fwd_bwd_links(df: pd.DataFrame) -> None:
     df_fwdbwd_merged = df_fwdbwd_start_events.merge(
         df_fwdbwd_end_events, how="inner", on="id", suffixes=("_start", "_end")
     )
-    
-    # print(f'zyy: df_fwdbwd_merged={len(df_fwdbwd_merged)}')
 
     start_indices = df_fwdbwd_merged["index_start"]
     end_indices = df_fwdbwd_merged["index_end"]
@@ -804,8 +796,8 @@ class Trace:
     @staticmethod
     def display_traces_info(traces):
         first_trace_df = next(iter(traces.values()))
-        print(f'total {len(traces)} traces, and each trace has {len(first_trace_df)} items')
-        print(first_trace_df['s_cat'].value_counts())
+        logger.info(f'total {len(traces)} traces, and each trace has {len(first_trace_df)} items')
+        logger.info(first_trace_df['s_cat'].value_counts())
 
 class MegatronPipelineParrallelGroupTrace(Trace):
     def __init__(
@@ -922,6 +914,7 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             'step',
             'apply_rotary_pos_emb',
             'get_batch', 
+            'loss_func'
         ]
         
         cpu_op_names_list = [

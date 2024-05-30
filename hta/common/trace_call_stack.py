@@ -281,7 +281,7 @@ class CallStackGraph:
                 return row_data
             return row_data.get(key, None)
         except Exception as e:
-            print(f'Error setting node data: {e}, index={node_id}')
+            logger.error(f'Error setting node data: {e}, index={node_id}')
             return None
     
     def set_node_data_by_id(self, node_id, key, value):
@@ -299,7 +299,7 @@ class CallStackGraph:
             # Use loc to set the value in place
             self.full_df.loc[self.full_df['index'] == node_id, key] = value
         except Exception as e:
-            print(f'Error setting node data: {e}, index={node_id}')
+            logger.debug(f'Error setting node data: {e}, index={node_id}')
     
     def remove_node_by_id(self, node_id):
         """
@@ -980,9 +980,7 @@ class CallStackGraph:
         # If no specific node_id is provided, start from the root node.
         if node_id is None:
             node_id = self.root_index
-        # print(f'zyy: node_id={node_id}')
         node = self.nodes.get(node_id)
-        # print(f'zyy: node={node}')
         # Exit the function early if the node doesn't exist.
         if not node:
             return
@@ -1003,9 +1001,9 @@ class CallStackGraph:
         if level == 0 and save_path:
             with open(save_path, 'w') as file:
                 file.write(node_info)
-            print(f"Call stack has been saved to {save_path}")
+            logger.info(f"Call stack has been saved to {save_path}")
         elif level == 0:  # If no save path is specified, print the output to the console.
-            print(node_info)
+            logger.info(node_info)
 
         # Return the constructed string for recursive usage.
         return node_info

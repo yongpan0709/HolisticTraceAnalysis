@@ -1,0 +1,1 @@
+bash ../scripts/distribute_execute.sh hostfile stop.sh

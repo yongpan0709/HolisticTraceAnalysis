@@ -258,6 +258,8 @@ class CallStackGraph:
             self._construct_call_stack_graph(df)
             if save_call_stack_to_df:
                 self.save_call_stack_to_dataframe(apply_whole_graph=False)
+        
+        self.zyy_flag = 0
 
     def save_call_stack_to_dataframe(self, apply_whole_graph: bool = False) -> None:
         """Save the call stack graph information into the trace data frame.
@@ -1051,7 +1053,39 @@ class CallStackGraph:
         for child_index in node.children:
             self.mark_send_recv_direction(child_index, parent_name=node_name)
     
-    def rename_duplicate_children(self, node_index: int = None):
+    def assign_full_names(self):
+        """
+        Assign a 'full_name' to each node in the graph, which is a concatenation of all ancestor
+        node names from the root, separated by '/'.
+        """
+        # Helper function to recursively assign full names
+        def _assign_full_name(current_index, current_path):
+            if current_index not in self.nodes:
+                return
+
+            # Get the current node's name
+            # current_node_name = self.full_df.loc[self.full_df['index'] == current_index, 's_name'].iat[0] if current_index != self.root_index else ''
+            current_node_name = self.get_node_name_by_id(current_index)
+            if current_path:
+                # Append the current node name to the path, separated by '/'
+                full_name = f"{current_path}/{current_node_name}" if current_node_name else current_path
+            else:
+                full_name = current_node_name
+
+            # Store the full name in the DataFrame
+            self.set_node_data_by_id(current_index, 'full_name', full_name)
+
+            # Recursively process each child
+            children_indices = self.nodes[current_index].children
+            for child_index in children_indices:
+                _assign_full_name(child_index, full_name)
+
+        # Start the recursion from the root node
+        _assign_full_name(self.root_index, '')
+        
+        self.zyy_flag += 1
+
+    def rename_children_with_duplicate_names(self, node_index: int = None):
         """
         Rename child nodes with duplicate names in time order (some_name_0, some_name_1, etc.).
 
@@ -1099,38 +1133,7 @@ class CallStackGraph:
         # Start the recursion from the given node index
         _rename_recursively(node_index)
     
-    def assign_full_names(self):
-        """
-        Assign a 'full_name' to each node in the graph, which is a concatenation of all ancestor
-        node names from the root, separated by '/'.
-        """
-        # Helper function to recursively assign full names
-        def _assign_full_name(current_index, current_path):
-            if current_index not in self.nodes:
-                return
-
-            # Get the current node's name
-            # current_node_name = self.full_df.loc[self.full_df['index'] == current_index, 's_name'].iat[0] if current_index != self.root_index else ''
-            current_node_name = self.get_node_name_by_id(current_index)
-            if current_path:
-                # Append the current node name to the path, separated by '/'
-                full_name = f"{current_path}/{current_node_name}" if current_node_name else current_path
-            else:
-                full_name = current_node_name
-
-            # Store the full name in the DataFrame
-            # self.df.loc[self.df['index'] == current_index, 'full_name'] = full_name
-            self.set_node_data_by_id(current_index, 'full_name', full_name)
-
-            # Recursively process each child
-            children_indices = self.nodes[current_index].children
-            for child_index in children_indices:
-                _assign_full_name(child_index, full_name)
-
-        # Start the recursion from the root node
-        _assign_full_name(self.root_index, '')
-
-    def remove_duplicate_named_children(self, node_index: int = None):
+    def eliminate_duplicate_named_children(self, node_index: int = None):
         """
         Traverse the tree and remove child nodes with the same name as their parent nodes.
         If a child node is removed, its children are connected to its parent node.

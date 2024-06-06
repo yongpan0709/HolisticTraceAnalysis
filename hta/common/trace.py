@@ -32,7 +32,7 @@ from hta.configs.parser_config import ParserConfig
 from hta.utils.utils import get_mp_pool_size, normalize_path
 from hta.common.trace_filter import NameFilter, GPUKernelFilter, CompositeFilter, TimeRangeFilter
 from hta.utils.parallel_state import get_next_pipeline_rank, is_first_stage, is_last_stage
-from hta.utils.utils import add_rank_to_filename
+from hta.utils.utils import add_rank_to_filename, apply_function_for_parallel
 
 MetaData = Dict[str, Any]
 PHASE_COUNTER: str = "C"
@@ -292,30 +292,6 @@ def add_fwd_bwd_links(df: pd.DataFrame) -> None:
     df.drop(columns=["key"], inplace=True)
     t1 = time.perf_counter()
     logger.debug(f"Time taken to add fwd_bwd links: {t1 - t0 :.2f} seconds")
-
-def apply_function_for_parallel(inputs, function, use_multiprocessing: bool = True):
-    if not use_multiprocessing:
-        total_results = []
-        for input in inputs:
-            if isinstance(input, [list, tuple]):
-                result = function(*input)
-            else:
-                result = function(input)
-            total_results.append(result)
-        logger.debug(f"finished applying func {function.__name__} using 1 processes.")
-        return total_results
-    
-    num_procs = min(mp.cpu_count(), len(inputs))
-    with mp.get_context("fork").Pool(num_procs) as pool:
-        if isinstance(inputs[0], (list, tuple)):
-            results = pool.starmap(function, inputs)
-        else:
-            results = pool.map(function, inputs)
-        pool.close()
-        pool.join()
-    logger.debug(f"finished parallel applying func {function.__name__} using {num_procs} processes.")
-    
-    return results
 
 class Trace:
     """
@@ -769,7 +745,7 @@ class Trace:
             inputs = list(self.traces.items())
         else:
             inputs = list(self.traces.values())
-        results = apply_function_for_parallel(inputs, function)
+        results = apply_function_for_parallel(function, inputs)
         keys = list(self.traces.keys())
         return {key: result for key, result in zip(keys, results)}
     
@@ -783,7 +759,7 @@ class Trace:
         for rank in effective_ranks:
             file_path_with_rank = add_rank_to_filename(file_path, rank)
             inputs.append([self.traces[rank], file_path_with_rank, None, self.meta_data[rank]])
-        apply_function_for_parallel(inputs, save_trace_df_to_file)
+        apply_function_for_parallel(save_trace_df_to_file, inputs)
     
     @staticmethod
     def combine_into_one_trace(traces_dict: dict):

@@ -217,7 +217,7 @@ def prepare_directory(directory_path, force_clear=False):
         # Create the target directory
         os.makedirs(directory_path)
     
-    time.sleep(3)
+    time.sleep(6)
 
 def find_and_copy_files(source_directory, target_directory, suffix_list):
     """
@@ -251,21 +251,18 @@ def find_and_create_symlinks(source_directory, target_directory, suffix_list):
                 source_path = os.path.join(source_directory, filename)
                 target_path = os.path.join(target_directory, filename)
                 
-                if os.path.exists(target_path):
-                    os.unlink(target_path)  # Remove existing target file
-                os.symlink(source_path, target_path)
+                if not os.path.exists(target_path):
+                    os.symlink(source_path, target_path)
+                else:
+                    logger.info(f'{target_path} exists')
 
-def partition_files_across_directories(source_directory, target_directory, groups_list, skip=False):
+def partition_files_across_directories(source_directory, target_directory, groups_list):
     """
     Partitions files across directories based on a list of groups, creating symbolic links for each group in separate subdirectories.
     """
-    all_sub_dirs = []
     for i, group in enumerate(groups_list):
         sub_dir = target_directory + f'_{i}'
-        all_sub_dirs.append(sub_dir)
-        if not skip:
-            find_and_create_symlinks(source_directory, sub_dir, group)
-    return all_sub_dirs
+        find_and_create_symlinks(source_directory, sub_dir, group)
 
 def add_rank_to_filename(filepath, rank):
     # Split the file path into root and extension
@@ -289,6 +286,80 @@ def add_rank_to_filename(filepath, rank):
         new_filename = new_base_name + ext
     
     return new_filename
+
+def apply_function_for_parallel(function, inputs=None, use_multiprocessing: bool = True):
+    if inputs is None:
+        inputs = [None] * mp.cpu_count()  # Default to the number of CPU cores if no inputs are provided
+
+    if not use_multiprocessing:
+        total_results = []
+        for input in inputs:
+            if input is not None:
+                if isinstance(input, (list, tuple)):
+                    result = function(*input)
+                else:
+                    result = function(input)
+            else:
+                result = function()
+            total_results.append(result)
+        logger.debug(f"Finished applying func {function.__name__} using 1 process.")
+        return total_results
+    
+    num_procs = min(mp.cpu_count(), len(inputs))
+    with mp.get_context("fork").Pool(num_procs) as pool:
+        if inputs[0] is not None:
+            if isinstance(inputs[0], (list, tuple)):
+                results = pool.starmap(function, inputs)
+            else:
+                results = pool.map(function, inputs)
+        else:
+            results = pool.map(lambda _: function(), inputs)
+        pool.close()
+        pool.join()
+    logger.debug(f"Finished parallel applying func {function.__name__} using {num_procs} processes.")
+    
+    return results
+
+def worker(instance, func_name, args, kwargs):
+    func = getattr(instance, func_name)
+    logger.info(f'zyy: func={func.__name__}, args={args}, kwargs={kwargs}')
+    if args and kwargs:
+        result = func(*args, **kwargs)
+    elif args:
+        result = func(*args)
+    elif kwargs:
+        result = func(**kwargs)
+    else:
+        result = func()
+    return instance, result
+
+def apply_class_function_for_parallel(instances, func_name, inputs=None, use_multiprocessing=True):
+    if inputs is None:
+        inputs = [((), {})] * len(instances)  # Default to an empty args and kwargs for each instance if no inputs are provided
+
+    if not use_multiprocessing:
+        total_results = []
+        for instance, (args, kwargs) in zip(instances, inputs):
+            instance, result = worker(instance, func_name, args, kwargs)
+            total_results.append(result)
+        logger.debug(f"Finished applying func {func_name} using 1 process.")
+        return total_results
+
+    num_procs = min(mp.cpu_count(), len(instances))
+    with mp.get_context("fork").Pool(num_procs) as pool:
+        tasks = [(instance, func_name, args, kwargs) for instance, (args, kwargs) in zip(instances, inputs)]
+        results = pool.starmap(worker, tasks)
+        pool.close()
+        pool.join()
+    logger.debug(f"Finished parallel applying func {func_name} using {num_procs} processes.")
+
+    # Update instances with modified values and collect results
+    final_results = []
+    for i in range(len(instances)):
+        instances[i], result = results[i]
+        final_results.append(result)
+
+    return final_results
 
 class LogToFile:
     """

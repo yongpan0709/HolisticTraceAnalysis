@@ -34,16 +34,13 @@ echo "NUM_NODES: $NUM_NODES"
 # Read hosts into an array
 readarray -t HOSTLIST < <(grep -vE '^#|^$' "$HOSTFILE" | awk '{print $1}')
 
-# Transfer and execute the script on each host in parallel
+HOST_ID=0
+# Transfer and execute the script on each host in parallel, passing the HOST_ID
 for host in "${HOSTLIST[@]}"; do
-  echo "Transferring script to $host..."
+  echo "Transferring script to $host with HOST_ID=$HOST_ID..."
   scp "$SCRIPT_PATH" "${host}:/tmp/" &
-done
-wait # Wait for all scp transfers to complete
-
-for host in "${HOSTLIST[@]}"; do
-  echo "Executing script on $host..."
-  ssh "$host" "bash /tmp/$(basename "$SCRIPT_PATH")" &
+  ssh "$host" "HOST_ID=$HOST_ID bash /tmp/$(basename "$SCRIPT_PATH")" &
+  ((HOST_ID++))  # Increment HOST_ID for each host
 done
 wait # Wait for all commands to complete
 

@@ -9,7 +9,7 @@ from hta.common.trace_call_stack import CallStackGraph, CallStackIdentity, CallS
 from hta.common.trace_symbol_table import TraceSymbolTable
 from hta.common.types import DeviceType, infer_device_type
 from hta.configs.config import logger
-from hta.utils.utils import add_rank_to_filename
+from hta.utils.utils import add_rank_to_filename, apply_function_for_parallel, apply_class_function_for_parallel
 
 
 class CallGraph:
@@ -487,35 +487,48 @@ class CallGraph:
         return self._cached_gpu_kernels
     
     def get_first_stack_on_rank(self, rank):
-        _, first_call_stack = next(iter(self.rank_to_stacks[rank].items()))
-        return first_call_stack
+        first_call_stack_id, first_call_stack = next(iter(self.rank_to_stacks[rank].items()))
+        return first_call_stack_id, first_call_stack
+    
+    def apply_function_for_parallel(self, func_name, inputs_list=None):
+        stacks = [self.get_first_stack_on_rank(rank) for rank in self.ranks]
+        stacks_ids = [stack[0] for stack in stacks]
+        stacks_instances = [stack[1] for stack in stacks]
+        self.call_stacks = [stack for stack in self.call_stacks if stack not in stacks_instances]
+        
+        apply_class_function_for_parallel(stacks_instances, func_name, inputs_list)
+        
+        for rank, stack_id, stack_instance in zip(self.ranks, stacks_ids, stacks_instances):
+            self.rank_to_stacks[rank][stack_id] = stack_instance
+            self.trace_data.traces[rank] = stack_instance.full_df
+        self.call_stacks += stacks_instances        
     
     def print_call_graph(self, save_path=None):
-        for rank in self.ranks:
-            if save_path is None:
-                save_path_per_rank = None
-            else:
-                save_path_per_rank = add_rank_to_filename(save_path, rank)
-            
-            first_stack = self.get_first_stack_on_rank(rank)
-            first_stack.print_call_stack(save_path=save_path_per_rank)
+        if save_path is not None:
+            inputs_list = [
+                ((), {'save_path': add_rank_to_filename(save_path, rank)})
+                for rank in self.ranks
+            ]
+        else:
+            inputs_list = None
+
+        self.apply_function_for_parallel('print_call_stack', inputs_list)
                 
     def mark_send_recv_direction(self):
-        for rank in self.ranks:
-            first_stack = self.get_first_stack_on_rank(rank)
-            first_stack.mark_send_recv_direction()
+        self.apply_function_for_parallel('mark_send_recv_direction')
     
-    def rename_duplicate_children(self):
-        for rank in self.ranks:
-            first_stack = self.get_first_stack_on_rank(rank)
-            first_stack.rename_duplicate_children()
+    def eliminate_duplicate_named_children(self):
+        self.apply_function_for_parallel('eliminate_duplicate_named_children')
     
     def assign_full_names(self):
-        for rank in self.ranks:
-            first_stack = self.get_first_stack_on_rank(rank)
-            first_stack.assign_full_names()
+        stacks = [self.get_first_stack_on_rank(rank) for rank in self.ranks]
+        logger.info(f'zyy: flag={stacks[0][1].zyy_flag}')
+        # apply_class_function_for_parallel(stacks, 'assign_full_names')
+        self.apply_function_for_parallel('assign_full_names')
+        stacks = [self.get_first_stack_on_rank(rank) for rank in self.ranks]
+        logger.info(f'zyy: flag={stacks[0][1].zyy_flag}')
     
-    def remove_duplicate_named_children(self):
-        for rank in self.ranks:
-            first_stack = self.get_first_stack_on_rank(rank)
-            first_stack.remove_duplicate_named_children()
+    def rename_children_with_duplicate_names(self):
+        # stacks = [self.get_first_stack_on_rank(rank) for rank in self.ranks]
+        # apply_class_function_for_parallel(stacks, 'rename_children_with_duplicate_names')
+        self.apply_function_for_parallel('rename_children_with_duplicate_names')

@@ -857,31 +857,41 @@ class MegatronPipelineParrallelGroupTrace(Trace):
 
     def keep_useful_span(self, trace_df):
         user_annotation_names_list = [
-            'forward_step', 
-            'backward_step', 
-            'forward_backward_pipelining_without_interleaving', 
-            'get_batch', 'warmup_state', 
+            # 'forward_step', 
+            # 'backward_step', 
+            # 'forward_backward_pipelining_without_interleaving', 
+            # 'get_batch', 
+            'warmup_state', 
             'steady_state', 
             'cooldown_state', 
             'mccl:', 
             'ProfilerStep', 
+            # 'recv_forward', 
+            # 'recv_backward', 
+            # 'send_forward', 
+            # 'send_backward', 
+            # 'send_forward_recv_backward', 
+            # 'send_backward_recv_forward'
+        ]
+        python_function_names_list = [
+            'forward_step', 
+            'backward_step',
+            'forward_backward_pipelining_without_interleaving',
             'recv_forward', 
             'recv_backward', 
             'send_forward', 
             'send_backward', 
             'send_forward_recv_backward', 
-            'send_backward_recv_forward'
-        ]
-        python_function_names_list = [
+            'send_backward_recv_forward',
             'Embedding', 
             'RotaryEmbedding', 
             'ParallelAttention', 
             'ParallelMLP',  
-            'RmsNormBackward', 
-            'LinearWithGradAccumulationAndAsyncCommunicationBackward', 
             'ParallelTransformerLayer',
             'ColumnParallelLinear', 
             'RowParallelLinear', 
+            'FlashSelfAttention',
+            'MixedFusedLayerNorm',
             'post_language_model_processing', 
             'parallel_lm_logits', 
             'vocab_parallel_cross_entropy', 
@@ -890,7 +900,9 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             'step',
             'apply_rotary_pos_emb',
             'get_batch', 
-            'loss_func'
+            'loss_func',
+            'custom_forward',
+            'backward',
         ]
         
         cpu_op_names_list = [
@@ -901,7 +913,8 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             'aten::_scaled_dot_product_attention_flash_musa_backward', 
             'aten::embedding_backward',
             'autograd::',
-            'torch::autograd::'
+            'torch::autograd::',
+            'autograd::engine::evaluate_function',
         ]
         
         filter_user_annotation = NameFilter(create_regex_for_prefix_match(user_annotation_names_list))

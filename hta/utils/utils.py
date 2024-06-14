@@ -201,6 +201,7 @@ def prepare_directory(directory_path, force_clear=False):
     Parameters:
     - directory_path: The path to the target directory.
     """
+    logger.info(f'prepare directory for {directory_path}, force_clear={force_clear}')
     if os.path.exists(directory_path):
         if force_clear:
             # Empty the target directory

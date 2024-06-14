@@ -974,7 +974,7 @@ class CallStackGraph:
             filtered_info = {k: v for k, v in info_dict.items() if not(isinstance(v[0], (int, float)) and v[0] <= 0)}
             node_info = ''
             for key, value in filtered_info.items():
-                node_info += f"{key}={value[0]} {value[1]}, "
+                node_info += f"{key}={value[0]}{value[1]}, "
             return node_info
 
         # If no specific node_id is provided, start from the root node.

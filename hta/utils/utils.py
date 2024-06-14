@@ -141,7 +141,12 @@ def shorten_name(name: str) -> str:
                 stack.pop()
         else:
             stack.append(c)
-    return "".join(stack).split(" ")[-1]
+            
+    new_name = "".join(stack)
+    
+    if 'autograd::engine::evaluate_function' in new_name:
+        return new_name.replace(" ", "")
+    return new_name.split(" ")[-1]
 
 
 def flatten_column_names(df: pd.DataFrame) -> None:
@@ -190,9 +195,6 @@ def get_symbol_column_names(df: pd.DataFrame) -> Tuple[str, str]:
             cat_column = column_name
             break
     return name_column, cat_column
-
-import os
-import shutil
 
 def prepare_directory(directory_path, force_clear=False):
     """

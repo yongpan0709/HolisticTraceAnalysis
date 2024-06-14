@@ -901,8 +901,6 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             'apply_rotary_pos_emb',
             'get_batch', 
             'loss_func',
-            'custom_forward',
-            'backward',
         ]
         
         cpu_op_names_list = [

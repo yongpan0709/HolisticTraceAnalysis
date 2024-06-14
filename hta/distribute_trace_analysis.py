@@ -13,7 +13,56 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import shutil
 import time
+import numpy as np
 
+def gatherv_p2p(comm, sendbuf, recvbuf, root=0):
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+    
+    if rank == root:
+        recv_data, recvcounts, displs, recvtype = recvbuf
+        recvcounts = np.asarray(recvcounts, dtype=np.int64)
+        displs = np.asarray(displs, dtype=np.int64)
+        
+        for i in range(size):
+            if i == root:
+                recv_data[displs[i]:displs[i] + recvcounts[i]] = sendbuf
+            else:
+                temp_recvbuf = np.empty(recvcounts[i], dtype='b')
+                comm.Recv([temp_recvbuf, recvtype], source=i)
+                recv_data[displs[i]:displs[i] + recvcounts[i]] = temp_recvbuf
+    else:
+        comm.Send([sendbuf, MPI.BYTE], dest=root)
+
+def gather_data(comm, send_data, use_p2p=True):
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+    send_data_size = len(send_data)
+    
+    # Collect the size of data sent by each process
+    send_counts = comm.gather(send_data_size, root=0)
+    
+    if rank == 0:
+        recv_displs = np.zeros(size, dtype=int)
+        for i in range(1, size):
+            recv_displs[i] = recv_displs[i - 1] + send_counts[i - 1]
+        total_recv_size = sum(send_counts)
+        recv_data = np.empty(total_recv_size, dtype='b')
+    else:
+        recv_displs = None
+        recv_data = None
+    
+    if use_p2p:
+        if rank == 0:
+            recvbuf_p2p = (recv_data, send_counts, recv_displs, MPI.BYTE)
+        else:
+            recvbuf_p2p = None
+        gatherv_p2p(comm, np.frombuffer(send_data, dtype='b'), recvbuf_p2p, root=0)
+    else:
+        comm.Gatherv(np.frombuffer(send_data, dtype='b'), [recv_data, send_counts, recv_displs, MPI.BYTE], root=0)
+    
+    return recv_data, send_counts, recv_displs
+    
 class DistributedMegatronTraceAnalysis:
     def __init__(self, trace_dir, tensor_parallel_size, data_parallel_size, pipeline_parallel_size):
         self.trace_dir = trace_dir
@@ -32,6 +81,7 @@ class DistributedMegatronTraceAnalysis:
         self.assign_analysis_tasks()
     
     def post_process(self):
+        self.comm.Barrier()
         if self.rank == 0:
             self.move_output_dir()
     
@@ -166,27 +216,15 @@ class DistributedMegatronTraceAnalysis:
     
     def gather_infos_from_all_ranks(self):
         self.logger.info('Gathering information from all ranks.')
-        
-        # 序列化发送的数据
+
+        # Serialize the data to be sent
         send_data = pickle.dumps(self.analysis_list)
-        send_data_size = len(send_data)
 
-        # 收集每个进程发送的数据大小
-        send_counts = self.comm.gather(send_data_size, root=0)
-        
-        # 根进程准备接收缓冲区和偏移量
-        if self.rank == 0:
-            recv_data = bytearray(sum(send_counts))
-            recv_displs = [sum(send_counts[:i]) for i in range(self.world_size)]
-        else:
-            recv_data = None
-            recv_displs = None
-
-        # 使用 MPI_Gatherv 收集所有进程的数据
-        self.comm.Gatherv(send_data, [recv_data, send_counts, recv_displs, MPI.BYTE], root=0)
+        # Gather data using the helper function
+        recv_data, send_counts, recv_displs = gather_data(self.comm, send_data)
 
         if self.rank == 0:
-            # 根进程反序列化并合并数据
+            # The root process deserializes and merges data
             self.total_analysis_lists = []
             for i in range(self.world_size):
                 start_index = recv_displs[i]
@@ -221,24 +259,24 @@ class DistributedMegatronTraceAnalysis:
         self.plot_anomalies()
         
     def detect_anomalies(self, threshold=2):
-        # 计算每个full_name组的均值和标准差
-        mean_std_df = self.total_trace_df.groupby('full_name')['dur'].agg(['mean', 'std']).reset_index()
-        # 计算异常值的阈值
+        # Calculate the mean and standard deviation for each full_name and pp_stage group
+        mean_std_df = self.total_trace_df.groupby(['full_name', 'pp_stage'])['dur'].agg(['mean', 'std']).reset_index()
+        # Calculate the threshold for anomalies
         mean_std_df['lower_bound'] = mean_std_df['mean'] - threshold * mean_std_df['std']
         mean_std_df['upper_bound'] = mean_std_df['mean'] + threshold * mean_std_df['std']
         
-        # 标记异常值
-        self.total_trace_df = self.total_trace_df.merge(mean_std_df, on='full_name', suffixes=('', '_group'))
+        # Mark anomalies
+        self.total_trace_df = self.total_trace_df.merge(mean_std_df, on=['full_name', 'pp_stage'], suffixes=('', '_group'))
         self.total_trace_df['is_anomaly'] = ((self.total_trace_df['dur'] < self.total_trace_df['lower_bound']) |
                                             (self.total_trace_df['dur'] > self.total_trace_df['upper_bound']))
         self.anomaly_status = self.total_trace_df['is_anomaly']
-    
+
     def plot_anomalies(self):
         if self.anomaly_status is None:
-            self.logger.info("Anomalies have not been detected. Please run detect_anomalies_std first.")
+            self.logger.info("Anomalies have not been detected. Please run detect_anomalies first.")
             return
         
-        spans_with_anomalies = self.total_trace_df[self.anomaly_status].groupby('full_name').any().reset_index()
+        spans_with_anomalies = self.total_trace_df[self.anomaly_status].groupby(['full_name', 'pp_stage']).any().reset_index()
         num_spans_with_anomalies = spans_with_anomalies['is_anomaly'].sum()
         
         if num_spans_with_anomalies == 0:
@@ -247,36 +285,37 @@ class DistributedMegatronTraceAnalysis:
         
         for _, row in spans_with_anomalies.iterrows():
             if row['is_anomaly']:
-                subset = self.total_trace_df[self.total_trace_df['full_name'] == row['full_name']]
+                subset = self.total_trace_df[(self.total_trace_df['full_name'] == row['full_name']) &
+                                            (self.total_trace_df['pp_stage'] == row['pp_stage'])]
                 
-                # 根据'rank'列对subset进行排序
+                # Sort subset by 'rank' column
                 subset = subset.sort_values(by='rank')
                 
-                # 创建一个新的图和轴对象
+                # Create a new figure and axis object
                 fig, ax = plt.subplots(figsize=(12, 6))
                 
-                # 根据是否为异常值分配颜色
+                # Assign colors based on whether the value is an anomaly
                 colors = ['red' if x else 'blue' for x in subset['is_anomaly']]
                 
-                # 绘制条形图，使用'rank'作为x轴，'dur'作为y轴
+                # Plot a bar chart, using 'rank' as x-axis and 'dur' as y-axis
                 sns.barplot(x='rank', y='dur', data=subset, palette=colors, ax=ax)
                 
-                # 设置图表标题
-                ax.set_title(f'{row["full_name"]}')
+                # Set the title of the chart
+                ax.set_title(f'{row["full_name"]} - pp stage {row["pp_stage"]}')
                 
-                # 设置x轴的标签为排序后的'rank'列的值
-                ax.set_xticklabels(subset['rank'].astype(str), rotation=45)  # rotation参数可以调整标签的旋转角度
+                # Set x-axis labels to the values in the sorted 'rank' column
+                ax.set_xticklabels(subset['rank'].astype(str), rotation=45)  # The rotation parameter can adjust the angle of the labels
                 
-                # 设置y轴标签
+                # Set y-axis label
                 ax.set_ylabel('Duration')
                 
-                # 调整布局以适应标签
+                # Adjust layout to fit labels
                 plt.tight_layout()
                 
-                # 保存图形到文件，文件名以'full_name'为依据
-                filename = f"{row['full_name'].replace('/', '.')}.png"  # 替换'/'以避免文件名问题
+                # Save the plot to a file, with the filename based on 'full_name' and 'pp_stage'
+                filename = f"{row['full_name'].replace('/', '.')}_stage{row['pp_stage']}.png"  # Replace '/' to avoid filename issues
                 filename = os.path.join(self.stragglers_dir, filename)
                 plt.savefig(filename)
                 
-                # 关闭图形以释放内存
+                # Close the plot to release memory
                 plt.close(fig)

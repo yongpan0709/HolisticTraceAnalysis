@@ -259,8 +259,6 @@ class CallStackGraph:
             if save_call_stack_to_df:
                 self.save_call_stack_to_dataframe(apply_whole_graph=False)
         
-        self.zyy_flag = 0
-
     def save_call_stack_to_dataframe(self, apply_whole_graph: bool = False) -> None:
         """Save the call stack graph information into the trace data frame.
 
@@ -1083,8 +1081,6 @@ class CallStackGraph:
         # Start the recursion from the root node
         _assign_full_name(self.root_index, '')
         
-        self.zyy_flag += 1
-
     def rename_children_with_duplicate_names(self, node_index: int = None):
         """
         Rename child nodes with duplicate names in time order (some_name_0, some_name_1, etc.).
@@ -1180,7 +1176,4 @@ class CallStackGraph:
         
         # Start the recursion from the given node index
         _remove_duplicates_recursively(node_index)
-
-
-
-
+        

@@ -24,6 +24,7 @@ from hta.configs.parser_config import ParserConfig
 from hta.common.trace_call_graph import CallGraph 
 from hta.common.trace_df import calculate_flops_for_trace_df, calculate_comm_volume_for_trace_df
 from hta.common.trace_filter import NameFilter, create_regex_for_prefix_match
+from hta.utils.utils import prepare_directory
 
 
 class TimeSeriesTypes(Flag):
@@ -623,6 +624,7 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         self.t.decode_symbol_ids()
         assert self.t.is_parsed is True
         self.output_dir = os.path.join(trace_dir, 'output')
+        prepare_directory(self.output_dir, force_clear=True)
         # self.t.save_traces(f'{self.output_dir}/init.json')
     
     def analyze_pipeline_parallel(self):

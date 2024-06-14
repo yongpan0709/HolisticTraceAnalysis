@@ -521,14 +521,7 @@ class CallGraph:
         self.apply_function_for_parallel('eliminate_duplicate_named_children')
     
     def assign_full_names(self):
-        stacks = [self.get_first_stack_on_rank(rank) for rank in self.ranks]
-        logger.info(f'zyy: flag={stacks[0][1].zyy_flag}')
-        # apply_class_function_for_parallel(stacks, 'assign_full_names')
         self.apply_function_for_parallel('assign_full_names')
-        stacks = [self.get_first_stack_on_rank(rank) for rank in self.ranks]
-        logger.info(f'zyy: flag={stacks[0][1].zyy_flag}')
     
     def rename_children_with_duplicate_names(self):
-        # stacks = [self.get_first_stack_on_rank(rank) for rank in self.ranks]
-        # apply_class_function_for_parallel(stacks, 'rename_children_with_duplicate_names')
         self.apply_function_for_parallel('rename_children_with_duplicate_names')

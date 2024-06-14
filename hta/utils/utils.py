@@ -322,7 +322,6 @@ def apply_function_for_parallel(function, inputs=None, use_multiprocessing: bool
 
 def worker(instance, func_name, args, kwargs):
     func = getattr(instance, func_name)
-    logger.info(f'zyy: func={func.__name__}, args={args}, kwargs={kwargs}')
     if args and kwargs:
         result = func(*args, **kwargs)
     elif args:

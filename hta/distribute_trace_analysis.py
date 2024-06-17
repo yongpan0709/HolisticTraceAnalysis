@@ -14,6 +14,7 @@ import seaborn as sns
 import shutil
 import time
 import numpy as np
+from sklearn.ensemble import IsolationForest
 
 def gatherv_p2p(comm, sendbuf, recvbuf, root=0):
     rank = comm.Get_rank()
@@ -257,20 +258,35 @@ class DistributedMegatronTraceAnalysis:
         
         self.detect_anomalies()
         self.plot_anomalies()
-        
-    def detect_anomalies(self, threshold=2):
+    
+    def detect_anomalies(self):
+        # return self.detect_anomalies_zscore()
+        return self.detect_anomalies_ml()
+    
+
+    def detect_anomalies_zscore(self, threshold=1, min_std=0.1):
         # Calculate the mean and standard deviation for each full_name and pp_stage group
         mean_std_df = self.total_trace_df.groupby(['full_name', 'pp_stage'])['dur'].agg(['mean', 'std']).reset_index()
-        # Calculate the threshold for anomalies
-        mean_std_df['lower_bound'] = mean_std_df['mean'] - threshold * mean_std_df['std']
-        mean_std_df['upper_bound'] = mean_std_df['mean'] + threshold * mean_std_df['std']
+        
+        # Set a minimum standard deviation to avoid extremely small values
+        mean_std_df['std'] = mean_std_df['std'].apply(lambda x: max(x, min_std))
+        
+        # Calculate Z-Score
+        self.total_trace_df = self.total_trace_df.merge(mean_std_df, on=['full_name', 'pp_stage'], suffixes=('', '_group'))
+        self.total_trace_df['z_score'] = (self.total_trace_df['dur'] - self.total_trace_df['mean']) / self.total_trace_df['std']
         
         # Mark anomalies
-        self.total_trace_df = self.total_trace_df.merge(mean_std_df, on=['full_name', 'pp_stage'], suffixes=('', '_group'))
-        self.total_trace_df['is_anomaly'] = ((self.total_trace_df['dur'] < self.total_trace_df['lower_bound']) |
-                                            (self.total_trace_df['dur'] > self.total_trace_df['upper_bound']))
+        self.total_trace_df['is_anomaly'] = self.total_trace_df['z_score'].abs() > threshold
+        self.anomaly_status = self.total_trace_df['is_anomaly']
+    
+    def detect_anomalies_ml(self):
+        # Apply Isolation Forest
+        iso_forest = IsolationForest()  # Set contamination to the expected proportion of anomalies
+        self.total_trace_df['is_anomaly'] = iso_forest.fit_predict(self.total_trace_df[['dur']])
+        self.total_trace_df['is_anomaly'] = self.total_trace_df['is_anomaly'] == -1
         self.anomaly_status = self.total_trace_df['is_anomaly']
 
+    
     def plot_anomalies(self):
         if self.anomaly_status is None:
             self.logger.info("Anomalies have not been detected. Please run detect_anomalies first.")

@@ -765,6 +765,7 @@ class Trace:
     def combine_into_one_trace(traces_dict: dict):
         all_trace_dfs = []
         for rank, trace_df in traces_dict.items():
+            trace_df['rank'] = rank
             all_trace_dfs.append(trace_df)
         trace_df = pd.concat(all_trace_dfs, ignore_index=True)
         return trace_df
@@ -789,7 +790,7 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         self.tensor_parallel_size = tensor_parallel_size
         self.pipeline_parallel_size = pipeline_parallel_size
         self.with_gpu_kernel = False
-    
+            
     def load_traces(self, include_last_profiler_step: Optional[bool] = False) -> None:
         if self.is_parsed:
             logger.warning("Traces are already parsed and loaded!")
@@ -809,6 +810,7 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             df.index.names = [None]
             self.traces[rank] = df
         self.is_parsed = True
+        self.set_rank_info()
     
     @staticmethod
     def set_self_microbatch_id(trace_df):
@@ -857,21 +859,11 @@ class MegatronPipelineParrallelGroupTrace(Trace):
 
     def keep_useful_span(self, trace_df):
         user_annotation_names_list = [
-            # 'forward_step', 
-            # 'backward_step', 
-            # 'forward_backward_pipelining_without_interleaving', 
-            # 'get_batch', 
             'warmup_state', 
             'steady_state', 
             'cooldown_state', 
             'mccl:', 
             'ProfilerStep', 
-            # 'recv_forward', 
-            # 'recv_backward', 
-            # 'send_forward', 
-            # 'send_backward', 
-            # 'send_forward_recv_backward', 
-            # 'send_backward_recv_forward'
         ]
         python_function_names_list = [
             'forward_step', 
@@ -1080,6 +1072,9 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         trace_df_all_ranks = self.combine_into_one_trace(self.traces)
         save_trace_df_to_file(trace_df_all_ranks, save_path, self.trace_df_p2p_flow_events, next(iter(self.meta_data.values())))
     
+    def set_rank_info(self):
+        for rank in self.get_ranks():
+            self.traces[rank]['rank'] = rank    
     
     
     

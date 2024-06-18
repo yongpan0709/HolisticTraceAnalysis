@@ -7,7 +7,7 @@ import operator
 import numpy as np
 
 from hta.common.trace_symbol_table import TraceSymbolTable
-
+from hta.configs.config import logger
 
 def get_iterations(df: pd.DataFrame) -> List[int]:
     """Extract the iteration numbers from a trace DataFrame.
@@ -173,10 +173,10 @@ def convert_to_flow_events(trace_df_p2p_comm_flow: pd.DataFrame):
 
     return total_dicts
 
-def generate_metadata_events(pids_list):
+def generate_metadata_events(rank_pid_pairs):
     metadata_events = []
-    pids_list = sorted(pids_list)
-    for i, pid in enumerate(pids_list):
+    rank_pid_pairs = sorted(rank_pid_pairs)
+    for i, (rank, pid) in enumerate(rank_pid_pairs):
         metadata_events.append(
             {
                 'name': 'process_sort_index',
@@ -193,17 +193,16 @@ def generate_metadata_events(pids_list):
                 'ph': 'M',
                 'pid': pid,
                 'args':{
-                    'name': f'rank {pid}'
+                    'name': f'rank {rank}'
                 }
             }
         )
     return metadata_events
 
 def save_trace_df_to_file(df: pd.DataFrame, output_file: str, trace_df_p2p_comm_flow: pd.DataFrame=None, meta_data: dict=None):
-    # print(f'zyy: output_file={output_file}')
-    columns_to_keep = ['name', 'cat', 'pid', 'tid', 'ts', 'dur']
+    columns_to_keep = ['name', 'cat', 'pid', 'tid', 'ts', 'dur', 'rank']
     columns_to_drop = ['s_name', 's_cat']
-
+    
     new_df = df[columns_to_keep].copy()
     new_df['name'] = df['s_name']
     new_df['cat'] = df['s_cat']
@@ -213,7 +212,7 @@ def save_trace_df_to_file(df: pd.DataFrame, output_file: str, trace_df_p2p_comm_
     trace_data = meta_data.copy() if meta_data is not None else {}
     trace_events = new_df.to_dict('records')
     flow_events = convert_to_flow_events(trace_df_p2p_comm_flow)
-    metadata_events = generate_metadata_events([int(x) for x in new_df['pid'].unique()])
+    metadata_events = generate_metadata_events([tuple(x) for x in new_df[['rank', 'pid']].drop_duplicates().to_records(index=False)])
     trace_data["traceEvents"] = trace_events + flow_events + metadata_events
     
     with open(output_file, 'w') as f:

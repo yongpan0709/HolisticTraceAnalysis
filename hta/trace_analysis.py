@@ -643,8 +643,15 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         
         target_duplicate_name_list = [
             'forward_step',
-            'bakcward_step'
+            'bakcward_step',
+            'send_forward_recv_backward',
+            'send_backward_recv_forward',
+            'recv_forward',
+            'recv_backward',
+            'send_forward',
+            'send_backward'
         ]
+        
         self.call_graph.eliminate_duplicate_named_children(target_duplicate_name_list)
         logger.info('eliminate_duplicate_named_children')
         

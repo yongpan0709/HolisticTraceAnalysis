@@ -141,11 +141,10 @@ class DistributedMegatronTraceAnalysis:
             level=logging.DEBUG,
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
-        self.logger = logger
-        self.logger.info(f'Process {self.rank} on {self.processor_name} started logging.')
+        logger.info(f'Process {self.rank} on {self.processor_name} started logging.')
 
     def init_pp_group_sub_dirs(self):
-        self.logger.info('Initializing pipeline parallel group subdirectories.')
+        logger.info('Initializing pipeline parallel group subdirectories.')
         self.all_data_parallel_group_ranks, \
         self.all_tensor_parallel_group_ranks, \
         self.all_pipeline_parallel_group_ranks = get_3d_parallel_groups(
@@ -166,10 +165,10 @@ class DistributedMegatronTraceAnalysis:
 
         self.comm.Barrier()
         time.sleep(6)
-        self.logger.info('Initialization of pipeline parallel group subdirectories completed.')
+        logger.info('Initialization of pipeline parallel group subdirectories completed.')
     
     def assign_analysis_tasks(self):
-        self.logger.info('Assigning analysis tasks.')
+        logger.info('Assigning analysis tasks.')
         num_folders = len(self.all_pp_group_sub_dirs)
         num_folders_per_process = num_folders // self.world_size
         remainder = num_folders % self.world_size
@@ -182,19 +181,19 @@ class DistributedMegatronTraceAnalysis:
             end_index = start_index + num_folders_per_process
         
         self.assigned_folders = self.all_pp_group_sub_dirs[start_index:end_index]
-        self.logger.info(f'Assigned folders: {self.assigned_folders}')
+        logger.info(f'Assigned folders: {self.assigned_folders}')
 
     def load_trace_analyzer(self, trace_dir):
         cache_path = os.path.join(trace_dir, 'analyzer_cache.pkl')
         if os.path.exists(cache_path):
             with open(cache_path, 'rb') as f:
                 analyzer = pickle.load(f)
-            self.logger.info(f'Analyzer loaded from {cache_path}')
+            logger.info(f'Analyzer loaded from {cache_path}')
         else:
             analyzer = MegatronPipelineParallelGroupTraceAnalysis(trace_dir=trace_dir, data_parallel_size=self.data_parallel_size, tensor_parallel_size=self.tensor_parallel_size, pipeline_parallel_size=self.pipeline_parallel_size)
             with open(cache_path, 'wb') as f:
                 pickle.dump(analyzer, f)
-            self.logger.info(f'Analyzer saved to {cache_path}')
+            logger.info(f'Analyzer saved to {cache_path}')
         return analyzer
     
     def process_single_pp_group(self, trace_dir):
@@ -216,7 +215,7 @@ class DistributedMegatronTraceAnalysis:
         self.post_process()
     
     def gather_infos_from_all_ranks(self):
-        self.logger.info('Gathering information from all ranks.')
+        logger.info('Gathering information from all ranks.')
 
         # Serialize the data to be sent
         send_data = pickle.dumps(self.analysis_list)
@@ -234,7 +233,7 @@ class DistributedMegatronTraceAnalysis:
                 analysis_list = pickle.loads(data_chunk)
                 self.total_analysis_lists.extend(analysis_list)
 
-            self.logger.info(f'Total analysis lists gathered: {len(self.total_analysis_lists)}')
+            logger.info(f'Total analysis lists gathered: {len(self.total_analysis_lists)}')
             self.total_traces_list = [analysis.t.traces for analysis in self.total_analysis_lists]
             self.total_trace_df = self.combine_traces()
         else:
@@ -289,14 +288,14 @@ class DistributedMegatronTraceAnalysis:
     
     def plot_anomalies(self):
         if self.anomaly_status is None:
-            self.logger.info("Anomalies have not been detected. Please run detect_anomalies first.")
+            logger.info("Anomalies have not been detected. Please run detect_anomalies first.")
             return
         
         spans_with_anomalies = self.total_trace_df[self.anomaly_status].groupby(['full_name', 'pp_stage']).any().reset_index()
         num_spans_with_anomalies = spans_with_anomalies['is_anomaly'].sum()
         
         if num_spans_with_anomalies == 0:
-            self.logger.info("No anomalies found.")
+            logger.info("No anomalies found.")
             return
         
         for _, row in spans_with_anomalies.iterrows():

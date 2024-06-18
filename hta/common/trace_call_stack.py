@@ -259,7 +259,7 @@ class CallStackGraph:
             if save_call_stack_to_df:
                 self.save_call_stack_to_dataframe(apply_whole_graph=False)
         
-        self._load_nodes()
+        self._load_nodes_data()
         
     def save_call_stack_to_dataframe(self, apply_whole_graph: bool = False) -> None:
         """Save the call stack graph information into the trace data frame.
@@ -273,19 +273,7 @@ class CallStackGraph:
         self._add_kernel_info_to_cpu_ops(apply_whole_graph=apply_whole_graph)
         self._save_call_stack_to_df()
     
-    # def get_node_data_by_id(self, node_id, key=None):
-    #     try:
-    #         if node_id == self.root_index:
-    #             row_data = {}
-    #         else:
-    #             row_data = self.full_df.loc[self.full_df['index'] == node_id].iloc[0].to_dict()
-    #         if key is None:
-    #             return row_data
-    #         return row_data.get(key, None)
-    #     except Exception as e:
-    #         logger.error(f'Error setting node data: {e}, index={node_id}')
-    #         return None
-    def _load_nodes(self):
+    def _load_nodes_data(self):
         """load node data from DataFrame to dict"""
         self.nodes_data = {}
         for _, row in self.full_df.iterrows():
@@ -1017,8 +1005,12 @@ class CallStackGraph:
         # name = self.df.loc[self.df['index'] == node_id, 's_name'].iloc[0] if node_id >= 0 else 'root'
         node_info = f"{indent}{get_node_info(node_id)}\n"
         
-        # Recursively call this function for all children of the current node.
-        for child_id in node.children:
+        # Sort children by their start time (ts)
+        children_with_ts = [(child_id, self.get_node_data_by_id(child_id).get('ts', float('inf'))) for child_id in node.children]
+        sorted_children = sorted(children_with_ts, key=lambda x: x[1])
+
+        # Recursively call this function for all children of the current node, in sorted order.
+        for child_id, _ in sorted_children:
             node_info += self.print_call_stack(node_id=child_id, level=level + 1)
 
         # If it's the top-level call and a save path is specified, save the output to a file.
@@ -1153,7 +1145,7 @@ class CallStackGraph:
         # Start the recursion from the given node index
         _rename_recursively(node_index)
     
-    def eliminate_duplicate_named_children(self, node_index: int = None):
+    def eliminate_duplicate_named_children(self, node_index: int = None, target_name_list: List[str] = None):
         """
         Traverse the tree and remove child nodes with the same name as their parent nodes.
         If a child node is removed, its children are connected to its parent node.
@@ -1179,7 +1171,8 @@ class CallStackGraph:
             
             for child_index in children_indices:
                 child_name = self.get_node_name_by_id(child_index)
-                if child_name == parent_name:
+                
+                if (child_name == parent_name) and (target_name_list is None or child_name in target_name_list):
                     # If the child name is the same as the parent name, remove the child
                     grand_children_indices = self.nodes[child_index].children
                     

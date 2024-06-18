@@ -901,6 +901,13 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             'apply_rotary_pos_emb',
             'get_batch', 
             'loss_func',
+            'step',
+            'reduce_model_grads',
+            'allreduce_layernorm_grads',
+            'allreduce_embedding_grads',
+            'allreduce_word_embedding_grads',
+            'allreduce_position_embedding_grads',
+            'gather_model_params'
         ]
         
         cpu_op_names_list = [

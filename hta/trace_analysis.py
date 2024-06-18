@@ -640,8 +640,14 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         self.call_graph = CallGraph(self.t)
         logger.info('construct CallGraph')
         self.call_graph.print_call_graph(f'{self.output_dir}/init_graph.txt')
-        self.call_graph.eliminate_duplicate_named_children()
+        
+        target_duplicate_name_list = [
+            'forward_step',
+            'bakcward_step'
+        ]
+        self.call_graph.eliminate_duplicate_named_children(target_duplicate_name_list)
         logger.info('eliminate_duplicate_named_children')
+        
         self.call_graph.rename_children_with_duplicate_names()
         logger.info('rename_children_with_duplicate_names')
         self.call_graph.mark_send_recv_direction()

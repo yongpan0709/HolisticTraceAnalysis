@@ -674,54 +674,260 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
     
     def generate_report(self, save_path):
         output_df = None
-        
-        for index, rank in enumerate(sorted(self.t.traces.keys())):
+        first_stage_sync_time = None
+
+        for stage_id, rank in enumerate(sorted(self.t.traces.keys())):
             trace_df = self.t.traces[rank]
-            sorted_trace_df = trace_df.sort_values(by=['ts', 'dur'], ascending=[True, False])
-            sorted_trace_df['end'] = sorted_trace_df['ts'] + sorted_trace_df['dur']
-            time_per_batch = sorted_trace_df['end'].max() - sorted_trace_df['ts'].min()
-            
+            sorted_trace_df = self._preprocess_trace_df(trace_df)
+
+            time_per_batch = self._calculate_time_per_batch(sorted_trace_df)
             all_forward_steps_df = NameFilter(create_regex_for_prefix_match(['forward_step']))(sorted_trace_df)
-            steady_forward_steps_df = all_forward_steps_df.iloc[self.t.pipeline_parallel_size-index:]
-            forward_step_time = steady_forward_steps_df['dur'].mean()
-
             all_backward_steps_df = NameFilter(create_regex_for_prefix_match(['backward_step']))(sorted_trace_df)
-            steady_backward_steps_df = all_backward_steps_df.iloc[:-self.t.pipeline_parallel_size+index]
-            backward_step_time = steady_backward_steps_df['dur'].mean()
+            forward_step_time, backward_step_time, compute_time_total = self._calculate_step_times(all_forward_steps_df, all_backward_steps_df)
 
-            all_p2p_dfs = NameFilter(create_regex_for_prefix_match(['mccl:send', 'mccl:recv']))(sorted_trace_df)
+            all_send_df = NameFilter(create_regex_for_prefix_match(['mccl:send']))(sorted_trace_df)
+            all_recv_df = NameFilter(create_regex_for_prefix_match(['mccl:recv']))(sorted_trace_df)
+            comm_time_total = self._calculate_comm_time_total(all_send_df, all_recv_df)
+
+            bubble_time_head = self._calculate_bubble_time_head(stage_id, all_recv_df)
+            bubble_time_middle = self._calculate_bubble_time_middle(stage_id, all_send_df, all_recv_df)
+            bubble_time_tail = self._calculate_bubble_time_tail(stage_id, all_recv_df)
+
+            bubble_time_final, first_stage_sync_time = self._calculate_final_sync_time(sorted_trace_df, first_stage_sync_time)
+            bubble_time_total = bubble_time_head + bubble_time_middle + bubble_time_tail + bubble_time_final
+            comm_time_total += bubble_time_final
+
+            comm_time_true, overhead_wait_time_total = self._calculate_true_comm_and_overhead_wait_time(all_send_df, all_recv_df)
             
-            total_comm_time = all_p2p_dfs['comm_time'].sum()
-            total_wait_time = all_p2p_dfs['wait_time'].sum()
-            total_bubble_time = (self.t.pipeline_parallel_size - 1) * (forward_step_time + backward_step_time) 
-
-            num_microbatch = len(all_forward_steps_df)
+            optimizer_time = self._calculate_optimizer_time(sorted_trace_df, bubble_time_final)
+            
+            num_microbatch = len(all_forward_steps_df)  # Assuming the number of send steps represents the number of microbatches
             assert(len(all_backward_steps_df) == num_microbatch)
-            total_compute_time = num_microbatch * (forward_step_time + backward_step_time)
 
-            info_per_rank = {
+            args = {
                 'rank': rank,
-                'time_per_batch': time_per_batch/1000,
-                'microbatch_num': num_microbatch,
-                'forward_step_time': forward_step_time/1000,
-                'backward_step_time': backward_step_time/1000,
-                'time_per_microbatch': (forward_step_time+backward_step_time)/1000,
-                'total_comm_time': total_comm_time/1000,
-                'total_wait_time': total_wait_time/1000,
-                'total_bubble_time': total_bubble_time/1000,
-                'total_compute_time': total_compute_time/1000,
-                'comp_time_ratio': total_compute_time / time_per_batch,
-                'comm_time_ratio': total_comm_time / time_per_batch,
-                'bubble_time_ratio': total_bubble_time / time_per_batch,
-                'wait_time_ratio': total_wait_time / time_per_batch
+                'time_per_batch': time_per_batch,
+                'num_microbatch': num_microbatch,
+                'forward_step_time': forward_step_time,
+                'backward_step_time': backward_step_time,
+                'compute_time_total': compute_time_total,
+                'comm_time_total': comm_time_total,
+                'comm_time_true': comm_time_true,
+                'overhead_wait_time_total': overhead_wait_time_total,
+                'bubble_time_total': bubble_time_total,
+                'bubble_time_head': bubble_time_head,
+                'bubble_time_middle': bubble_time_middle,
+                'bubble_time_tail': bubble_time_tail,
+                'bubble_time_final': bubble_time_final,
+                'pipeline_parallel_size': self.t.pipeline_parallel_size,
+                'optimizer_time_total': optimizer_time
             }
+
+            info_per_rank = self._generate_info_per_rank(args)
 
             if output_df is None:
                 output_df = pd.DataFrame([info_per_rank])
             else:
                 output_df.loc[len(output_df)] = info_per_rank
-        
+
         if save_path is not None:
             output_df.to_csv(save_path, header=True, index=False)
         return output_df
+
+    def _calculate_optimizer_time(self, sorted_trace_df, bubble_time_final):
+        optimizer_df = NameFilter(create_regex_for_prefix_match(['reduce_model_grads', 'step_', 'gather_model_params']))(sorted_trace_df)
+        optimizer_time = optimizer_df['dur'].sum()
+        return optimizer_time - bubble_time_final
+    
+    def _preprocess_trace_df(self, trace_df):
+        sorted_trace_df = trace_df.sort_values(by=['ts', 'dur'], ascending=[True, False])
+        
+        # Use regex to find the first occurrence of any 'recv_forward*' event
+        recv_forward_index = sorted_trace_df[sorted_trace_df['s_name'].str.contains(r'^recv_forward.*')].index
+        first_recv_forward_index = recv_forward_index[0]
+        # Keep only the rows from the first 'recv_forward*' event onwards
+        sorted_trace_df = sorted_trace_df.loc[first_recv_forward_index:]
+
+        sorted_trace_df['end'] = sorted_trace_df['ts'] + sorted_trace_df['dur']
+        return sorted_trace_df
+
+    def _calculate_time_per_batch(self, sorted_trace_df):
+        return sorted_trace_df['end'].max() - sorted_trace_df['ts'].min()
+
+    def _calculate_step_times(self, all_forward_steps_df, all_backward_steps_df):
+        forward_step_time = all_forward_steps_df['dur'].mean()
+        backward_step_time = all_backward_steps_df['dur'].mean()
+        compute_time_total = all_forward_steps_df['dur'].sum() + all_backward_steps_df['dur'].sum()
+
+        return forward_step_time, backward_step_time, compute_time_total
+
+    def _calculate_comm_time_total(self, all_send_df, all_recv_df):
+        return all_send_df['dur'].sum() + all_recv_df['dur'].sum()
+
+    def _calculate_bubble_time_head(self, stage_id, all_recv_df):
+        if stage_id == 0:
+            return 0
+        else:
+            first_recv_index = all_recv_df.index[0]
+            bubble_time_head = all_recv_df.loc[first_recv_index]['wait_time']
+            all_recv_df.loc[first_recv_index, 'wait_time'] = 0
+            return bubble_time_head
+
+    def _calculate_bubble_time_middle(self, stage_id, all_send_df, all_recv_df):
+        if stage_id == self.t.pipeline_parallel_size - 1:
+            return 0
+        else:
+            max_send_wait_time = all_send_df['wait_time'].max()
+            max_recv_wait_time = all_recv_df['wait_time'].max()
+            if max_send_wait_time >= max_recv_wait_time:
+                max_wait_time = max_send_wait_time
+                max_wait_time_index = all_send_df[all_send_df['wait_time'] == max_send_wait_time].index[0]
+                all_send_df.loc[max_wait_time_index, 'wait_time'] = 0
+            else:
+                max_wait_time = max_recv_wait_time
+                max_wait_time_index = all_recv_df[all_recv_df['wait_time'] == max_recv_wait_time].index[0]
+                all_recv_df.loc[max_wait_time_index, 'wait_time'] = 0
+
+            return max_wait_time
+
+    def _calculate_bubble_time_tail(self, stage_id, all_recv_df):
+        end_recv_index = all_recv_df.index[-(self.t.pipeline_parallel_size - 1 - stage_id):]
+        bubble_time_tail = all_recv_df.loc[end_recv_index]['wait_time'].sum()
+        all_recv_df.loc[end_recv_index, 'wait_time'] = 0
+        return bubble_time_tail
+
+    def _calculate_final_sync_time(self, sorted_trace_df, first_stage_sync_time):
+        final_sync_time = sorted_trace_df[sorted_trace_df['s_name'] == '_unscale_main_grads_and_check_for_nan']['dur'].values[0]
+        if first_stage_sync_time is None:
+            first_stage_sync_time = final_sync_time
+        bubble_time_final = final_sync_time - first_stage_sync_time
+        return bubble_time_final, first_stage_sync_time
+
+    def _calculate_true_comm_and_overhead_wait_time(self, all_send_df, all_recv_df):
+        comm_time_true = all_send_df['comm_time'].sum() + all_recv_df['comm_time'].sum()
+        overhead_wait_time_total = all_send_df['wait_time'].sum() + all_recv_df['wait_time'].sum()
+        return comm_time_true, overhead_wait_time_total
+
+    def _generate_info_per_rank(self, args):
+        return {
+            'rank': args['rank'],
+            'time_per_batch': args['time_per_batch'] / 1000,
+            'microbatch_num': args['num_microbatch'],
+            'forward_step_time': args['forward_step_time'] / 1000,
+            'backward_step_time': args['backward_step_time'] / 1000,
+            'time_per_microbatch': (args['forward_step_time'] + args['backward_step_time']) / 1000,
+            'compute_time_total': args['compute_time_total'] / 1000,
+            'comm_time_total': args['comm_time_total'] / 1000,
+            'optimizer_time_total': args['optimizer_time_total'] / 1000,
+            'comm_time_true': args['comm_time_true'] / 1000,
+            'overhead_wait_time_total': args['overhead_wait_time_total'] / 1000,
+            'bubble_time_total': args['bubble_time_total'] / 1000,
+            'bubble_time_detail': [args['bubble_time_head'] / 1000, args['bubble_time_middle'] / 1000, args['bubble_time_tail'] / 1000, args['bubble_time_final'] / 1000],
+            'comp_time_ratio': args['compute_time_total'] / args['time_per_batch'],
+            'comm_time_ratio': args['comm_time_total'] / args['time_per_batch'],
+            'comm_time_true_ratio': args['comm_time_true'] / args['time_per_batch'],
+            'overhead_wait_time_ratio': args['overhead_wait_time_total'] / args['time_per_batch'],
+            'bubble_time_ratio': args['bubble_time_total'] / args['time_per_batch'],
+            'bubble_time_ratio_theoretical': (args['pipeline_parallel_size'] - 1) / (args['pipeline_parallel_size'] - 1 + args['num_microbatch'])
+        }
+    
+    # def generate_report(self, save_path):
+    #     output_df = None
+        
+    #     first_stage_sync_time = None
+        
+    #     for stage_id, rank in enumerate(sorted(self.t.traces.keys())):
+    #         trace_df = self.t.traces[rank]
+    #         sorted_trace_df = trace_df.sort_values(by=['ts', 'dur'], ascending=[True, False])
+    #         sorted_trace_df['end'] = sorted_trace_df['ts'] + sorted_trace_df['dur']
+            
+    #         time_per_batch = sorted_trace_df['end'].max() - sorted_trace_df['ts'].min()
+            
+    #         all_forward_steps_df = NameFilter(create_regex_for_prefix_match(['forward_step']))(sorted_trace_df)
+    #         forward_step_time = all_forward_steps_df['dur'].mean()
+    #         # steady_forward_steps_df = all_forward_steps_df.iloc[self.t.pipeline_parallel_size-stage_id:]
+    #         # forward_step_time = steady_forward_steps_df['dur'].mean()
+
+    #         all_backward_steps_df = NameFilter(create_regex_for_prefix_match(['backward_step']))(sorted_trace_df)
+    #         backward_step_time = all_backward_steps_df['dur'].mean()
+    #         # steady_backward_steps_df = all_backward_steps_df.iloc[:-self.t.pipeline_parallel_size+stage_id]
+    #         # backward_step_time = steady_backward_steps_df['dur'].mean()
+            
+    #         compute_time_total = all_forward_steps_df['dur'].sum() + all_backward_steps_df['dur'].sum()
+
+    #         all_send_df = NameFilter(create_regex_for_prefix_match(['mccl:send']))(sorted_trace_df)
+    #         all_recv_df = NameFilter(create_regex_for_prefix_match(['mccl:recv']))(sorted_trace_df)
+    #         comm_time_total = all_send_df['dur'].sum() + all_recv_df['dur'].sum()
+                        
+    #         if stage_id == 0:
+    #             bubble_time_head = 0
+    #         else:
+    #             first_recv_index = all_recv_df.index[0]
+    #             bubble_time_head = all_recv_df.loc[first_recv_index]['wait_time']
+    #             all_recv_df.loc[first_recv_index, 'wait_time'] = 0
+            
+    #         if stage_id == self.t.pipeline_parallel_size - 1:
+    #             bubble_time_middle = 0
+    #         else:
+    #             max_send_wait_time = all_send_df['wait_time'].max()
+    #             max_recv_wait_time = all_recv_df['wait_time'].max()
+    #             if max_send_wait_time >= max_recv_wait_time:
+    #                 max_wait_time = max_send_wait_time
+    #                 max_wait_time_index = all_send_df[all_send_df['wait_time'] == max_send_wait_time].index[0]
+    #                 all_send_df.loc[max_wait_time_index, 'wait_time'] = 0
+    #             else:
+    #                 max_wait_time = max_recv_wait_time
+    #                 max_wait_time_index = all_recv_df[all_recv_df['wait_time'] == max_recv_wait_time].index[0]
+    #                 all_recv_df.loc[max_wait_time_index, 'wait_time'] = 0
+                
+    #             bubble_time_middle = max_wait_time
+            
+    #         end_recv_index = all_recv_df.index[-(self.t.pipeline_parallel_size - 1 - stage_id):]
+    #         bubble_time_tail = all_recv_df.loc[end_recv_index]['wait_time'].sum()
+    #         all_recv_df.loc[end_recv_index, 'wait_time'] = 0
+            
+    #         final_sync_time = sorted_trace_df[sorted_trace_df['s_name'] == '_unscale_main_grads_and_check_for_nan']['dur'].values[0]
+    #         if first_stage_sync_time is None:
+    #             first_stage_sync_time = final_sync_time
+
+    #         bubble_time_final = final_sync_time - first_stage_sync_time
+            
+    #         bubble_time_total = bubble_time_head + bubble_time_middle + bubble_time_tail + bubble_time_final
+    #         comm_time_total += bubble_time_final
+            
+    #         comm_time_true = all_send_df['comm_time'].sum() + all_recv_df['comm_time'].sum()
+    #         overhead_wait_time_total = all_send_df['wait_time'].sum() + all_recv_df['wait_time'].sum()
+
+    #         num_microbatch = len(all_forward_steps_df)
+    #         assert(len(all_backward_steps_df) == num_microbatch)
+
+    #         info_per_rank = {
+    #             'rank': rank,
+    #             'time_per_batch': time_per_batch/1000,
+    #             'microbatch_num': num_microbatch,
+    #             'forward_step_time': forward_step_time/1000,
+    #             'backward_step_time': backward_step_time/1000,
+    #             'time_per_microbatch': (forward_step_time+backward_step_time)/1000,
+    #             'compute_time_total': compute_time_total/1000,
+    #             'comm_time_total': comm_time_total/1000,
+    #             'comm_time_true': comm_time_true/1000,
+    #             'overhead_wait_time_total': overhead_wait_time_total/1000,
+    #             'bubble_time_total': bubble_time_total/1000,
+    #             'bubble_time_detail': [bubble_time_head/1000, bubble_time_middle/1000, bubble_time_tail/1000, bubble_time_final/1000],
+    #             'comp_time_ratio': compute_time_total / time_per_batch,
+    #             'comm_time_ratio': comm_time_total / time_per_batch,
+    #             'comm_time_true_ratio': comm_time_true / time_per_batch,
+    #             'overhead_wait_time_ratio': overhead_wait_time_total / time_per_batch,
+    #             'bubble_time_ratio': bubble_time_total / time_per_batch,
+    #             'bubble_time_ratio_theoretical': (self.t.pipeline_parallel_size - 1) / (self.t.pipeline_parallel_size - 1 + num_microbatch)
+    #         }
+
+    #         if output_df is None:
+    #             output_df = pd.DataFrame([info_per_rank])
+    #         else:
+    #             output_df.loc[len(output_df)] = info_per_rank
+        
+    #     if save_path is not None:
+    #         output_df.to_csv(save_path, header=True, index=False)
+    #     return output_df
     

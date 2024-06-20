@@ -121,10 +121,12 @@ class DistributedMegatronTraceAnalysis:
         logger.info("All 'output' directories have been moved.")
     
     def setup_dirs(self):
-        self.trace_dir_pp_group = 'trace'
-        self.output_dir = 'output'
+        self.workspace_dir = 'workspace'
+        self.workname = os.path.basename(self.trace_dir)
+        self.trace_dir_pp_group = os.path.join(self.workspace_dir, self.workname, 'trace')
+        self.output_dir = os.path.join(self.workspace_dir, self.workname, 'output')
         self.stragglers_dir = os.path.join(self.output_dir, 'stragglers')
-        self.log_dir = 'log'
+        self.log_dir = os.path.join(self.workspace_dir, self.workname, 'log')
         if self.rank == 0:
             prepare_directory(self.trace_dir_pp_group, force_clear=False)
             prepare_directory(self.log_dir, force_clear=True)
@@ -259,9 +261,40 @@ class DistributedMegatronTraceAnalysis:
         self.plot_anomalies()
     
     def detect_anomalies(self):
+        self.detect_anomalies_zscore_and_relative()
         # return self.detect_anomalies_zscore()
-        return self.detect_anomalies_ml()
+        # return self.detect_anomalies_ml()
     
+    def detect_anomalies_zscore_and_relative(self, zscore_threshold=2, min_std=0.1, relative_threshold=0.5):
+        """
+        Detect anomalies based on Z-Score and relative deviation.
+
+        Args:
+            threshold (float): The Z-Score threshold to detect anomalies.
+            min_std (float): The minimum standard deviation to avoid extremely small values.
+            relative_threshold (float): The relative deviation threshold to detect anomalies.
+        """
+
+        # Calculate the mean and standard deviation for each full_name and pp_stage group
+        mean_std_df = self.total_trace_df.groupby(['full_name', 'pp_stage'])['dur'].agg(['mean', 'std']).reset_index()
+        
+        # Set a minimum standard deviation to avoid extremely small values
+        mean_std_df['std'] = mean_std_df['std'].apply(lambda x: max(x, min_std))
+        
+        # Merge mean and std with the original dataframe
+        self.total_trace_df = self.total_trace_df.merge(mean_std_df, on=['full_name', 'pp_stage'], suffixes=('', '_group'))
+        
+        # Calculate Z-Score
+        self.total_trace_df['z_score'] = (self.total_trace_df['dur'] - self.total_trace_df['mean']) / self.total_trace_df['std']
+        
+        # Calculate relative deviation
+        self.total_trace_df['relative_deviation'] = (self.total_trace_df['dur'] - self.total_trace_df['mean']).abs() / self.total_trace_df['mean']
+        
+        # Mark anomalies based on Z-Score and relative deviation
+        self.total_trace_df['is_anomaly'] = (self.total_trace_df['z_score'].abs() > zscore_threshold) | (self.total_trace_df['relative_deviation'] > relative_threshold)
+        self.anomaly_status = self.total_trace_df['is_anomaly']
+
+        return self.total_trace_df[['full_name', 'pp_stage', 'dur', 'z_score', 'relative_deviation', 'is_anomaly']]
 
     def detect_anomalies_zscore(self, threshold=1, min_std=0.1):
         # Calculate the mean and standard deviation for each full_name and pp_stage group
@@ -284,53 +317,56 @@ class DistributedMegatronTraceAnalysis:
         self.total_trace_df['is_anomaly'] = iso_forest.fit_predict(self.total_trace_df[['dur']])
         self.total_trace_df['is_anomaly'] = self.total_trace_df['is_anomaly'] == -1
         self.anomaly_status = self.total_trace_df['is_anomaly']
-
     
     def plot_anomalies(self):
         if self.anomaly_status is None:
             logger.info("Anomalies have not been detected. Please run detect_anomalies first.")
             return
-        
+
         spans_with_anomalies = self.total_trace_df[self.anomaly_status].groupby(['full_name', 'pp_stage']).any().reset_index()
         num_spans_with_anomalies = spans_with_anomalies['is_anomaly'].sum()
-        
+
         if num_spans_with_anomalies == 0:
             logger.info("No anomalies found.")
             return
-        
+
         for _, row in spans_with_anomalies.iterrows():
             if row['is_anomaly']:
                 subset = self.total_trace_df[(self.total_trace_df['full_name'] == row['full_name']) &
                                             (self.total_trace_df['pp_stage'] == row['pp_stage'])]
-                
+
                 # Sort subset by 'rank' column
                 subset = subset.sort_values(by='rank')
-                
+
                 # Create a new figure and axis object
                 fig, ax = plt.subplots(figsize=(12, 6))
-                
-                # Assign colors based on whether the value is an anomaly
-                colors = ['red' if x else 'blue' for x in subset['is_anomaly']]
-                
-                # Plot a bar chart, using 'rank' as x-axis and 'dur' as y-axis
-                sns.barplot(x='rank', y='dur', data=subset, palette=colors, ax=ax)
+
+                # Check if all values in 'is_anomaly' are the same
+                if subset['is_anomaly'].all() or not subset['is_anomaly'].any():
+                    # All values are the same, use red as the default color
+                    default_color = 'red'
+                    sns.barplot(x='rank', y='dur', data=subset, color=default_color, ax=ax)
+                else:
+                    # Mixed values, use blue and red
+                    sns.barplot(x='rank', y='dur', data=subset, hue='is_anomaly', dodge=False, palette={True: 'red', False: 'blue'}, ax=ax, legend=False)
                 
                 # Set the title of the chart
                 ax.set_title(f'{row["full_name"]} - pp stage {row["pp_stage"]}')
-                
+
                 # Set x-axis labels to the values in the sorted 'rank' column
-                ax.set_xticklabels(subset['rank'].astype(str), rotation=45)  # The rotation parameter can adjust the angle of the labels
-                
+                ax.set_xticks(range(len(subset)))
+                ax.set_xticklabels(subset['rank'].astype(str), rotation=45)
+
                 # Set y-axis label
                 ax.set_ylabel('Duration')
-                
+
                 # Adjust layout to fit labels
                 plt.tight_layout()
-                
+
                 # Save the plot to a file, with the filename based on 'full_name' and 'pp_stage'
                 filename = f"{row['full_name'].replace('/', '.')}_stage{row['pp_stage']}.png"  # Replace '/' to avoid filename issues
                 filename = os.path.join(self.stragglers_dir, filename)
                 plt.savefig(filename)
-                
+
                 # Close the plot to release memory
                 plt.close(fig)

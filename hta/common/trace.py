@@ -888,8 +888,6 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             'parallel_lm_logits', 
             'vocab_parallel_cross_entropy', 
             'average_losses_across_data_parallel_group',  
-            'gather_model_params', 
-            'step',
             'apply_rotary_pos_emb',
             'get_batch', 
             'loss_func',
@@ -899,7 +897,11 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             'allreduce_embedding_grads',
             'allreduce_word_embedding_grads',
             'allreduce_position_embedding_grads',
-            'gather_model_params'
+            'gather_model_params',
+            '_copy_model_grads_to_main_grads',
+            '_unscale_main_grads_and_check_for_nan',
+            'clip_grad_norm',
+            '_copy_main_params_to_model_params'
         ]
         
         cpu_op_names_list = [
@@ -938,6 +940,14 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             'send_backward_recv_forward', 
             'mccl:send', 
             'mccl:recv', 
+            'reduce_model_grads',
+            'step',
+            'gather_model_params',
+            '_copy_model_grads_to_main_grads',
+            '_unscale_main_grads_and_check_for_nan',
+            'clip_grad_norm',
+            '_copy_main_params_to_model_params',
+            # 'mccl:all_reduce'
         ]
         filter_comm = NameFilter(create_regex_for_prefix_match(comm_names_list))
         

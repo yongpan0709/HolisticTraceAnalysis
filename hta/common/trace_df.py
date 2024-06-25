@@ -295,7 +295,7 @@ def get_calculate_comm_volumn_function(op_name):
         return calculate_all_gather_comm_volumn
     elif op_name == 'mccl:_reduce_scatter_base':
         return calculate_reduce_scatter_comm_volumn
-    elif op_name in ['mccl:send', 'mccl:recv']:
+    elif op_name.startswith(('mccl:send', 'mccl:recv')):
         return calculate_p2p_comm_volumn
     elif op_name in ['mccl:broadcast']:
         return calculate_broadcast_comm_volumn
@@ -311,5 +311,13 @@ def calculate_flops_for_trace_df(trace_df):
 
 def calculate_comm_volume_for_trace_df(trace_df):
     trace_df['comm_volume'] = trace_df.apply(lambda row: get_calculate_comm_volumn_function(row['s_name'])(row['input_dims'], row['input_type']), axis=1)
-    trace_df['bandwidth'] = trace_df.apply(lambda row: row['comm_volume'] / row['dur'] * 1e-3 if row['comm_volume'] > 0 else -1, axis=1)
+    trace_df['bandwidth'] = trace_df.apply(
+        lambda row: (
+            row['comm_volume'] / row.get('comm_time', row['dur']) * 1e-3
+            if row['s_name'].startswith(('mccl:send', 'mccl:recv'))
+            else (row['comm_volume'] / row['dur'] * 1e-3 if row['comm_volume'] > 0 else -1)
+        ), 
+        axis=1
+    )
+
     return trace_df

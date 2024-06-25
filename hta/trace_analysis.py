@@ -634,9 +634,6 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         self.t.display_traces_info(self.t.traces)
         self.t.save_traces(f'{self.output_dir}/after_filter.json')
         
-        self.t.traces = self.t.parallel_apply(calculate_comm_volume_for_trace_df)
-        self.t.traces = self.t.parallel_apply(calculate_flops_for_trace_df)
-        
         self.call_graph = CallGraph(self.t)
         logger.info('construct CallGraph')
         self.call_graph.print_call_graph(f'{self.output_dir}/init_graph.txt')
@@ -661,20 +658,26 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         logger.info('mark_send_recv_direction')
         self.call_graph.assign_full_names()
         logger.info('assign_full_names')
-        self.call_graph.print_call_graph(f'{self.output_dir}/full_names.txt')
+        # self.call_graph.print_call_graph(f'{self.output_dir}/full_names.txt')
         
         self.t.traces = self.call_graph.trace_data.traces
-        self.t.traces = self.t.parallel_apply(self.t.keep_comm_span_only) 
+        
         self.t.set_micro_batch_id()
         logger.info('set_micro_batch_id')
         self.t.establish_p2p_link_on_adjacent_ranks()
         logger.info('establish_p2p_link_on_adjacent_ranks')
+        
+        self.t.traces = self.t.parallel_apply(calculate_comm_volume_for_trace_df)
+        self.t.traces = self.t.parallel_apply(calculate_flops_for_trace_df)
+        CallGraph(self.t).print_call_graph(f'{self.output_dir}/full_names.txt')
+        
+        self.t.traces = self.t.parallel_apply(self.t.keep_comm_span_only) 
         self.t.save_traces_with_p2p_comm(f'{self.output_dir}/trace_only_comm_all_ranks_with_flow.json')
         self.generate_report(f'{self.output_dir}/report.csv')
     
     def generate_report(self, save_path):
         output_df = None
-        first_stage_sync_time = None
+        first_stage_optimizer_step = None
 
         for stage_id, rank in enumerate(sorted(self.t.traces.keys())):
             trace_df = self.t.traces[rank]
@@ -693,7 +696,7 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
             bubble_time_middle = self._calculate_bubble_time_middle(stage_id, all_send_df, all_recv_df)
             bubble_time_tail = self._calculate_bubble_time_tail(stage_id, all_recv_df)
 
-            bubble_time_final, first_stage_sync_time = self._calculate_final_sync_time(sorted_trace_df, first_stage_sync_time)
+            bubble_time_final, first_stage_optimizer_step = self._calculate_optimizer_step_time_and_bubble(sorted_trace_df, first_stage_optimizer_step)
             bubble_time_total = bubble_time_head + bubble_time_middle + bubble_time_tail + bubble_time_final
             comm_time_total += bubble_time_final
 
@@ -796,12 +799,14 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         all_recv_df.loc[end_recv_index, 'wait_time'] = 0
         return bubble_time_tail
 
-    def _calculate_final_sync_time(self, sorted_trace_df, first_stage_sync_time):
-        final_sync_time = sorted_trace_df[sorted_trace_df['s_name'] == '_unscale_main_grads_and_check_for_nan']['dur'].values[0]
-        if first_stage_sync_time is None:
-            first_stage_sync_time = final_sync_time
-        bubble_time_final = final_sync_time - first_stage_sync_time
-        return bubble_time_final, first_stage_sync_time
+    def _calculate_optimizer_step_time_and_bubble(self, sorted_trace_df, first_stage_optimizer_step_time):
+        # Use regex to match 'full_name' with the pattern '?ProfilerStep?/step?'
+        pattern = r'.*ProfilerStep.*/step.*'
+        optimizer_step_time = sorted_trace_df[sorted_trace_df['full_name'].str.contains(pattern, regex=True)]['dur'].values[0]
+        if first_stage_optimizer_step_time is None:
+            first_stage_optimizer_step_time = optimizer_step_time
+        bubble_time_final = optimizer_step_time - first_stage_optimizer_step_time
+        return bubble_time_final, first_stage_optimizer_step_time
 
     def _calculate_true_comm_and_overhead_wait_time(self, all_send_df, all_recv_df):
         comm_time_true = all_send_df['comm_time'].sum() + all_recv_df['comm_time'].sum()
@@ -830,104 +835,4 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
             'bubble_time_ratio': args['bubble_time_total'] / args['time_per_batch'],
             'bubble_time_ratio_theoretical': (args['pipeline_parallel_size'] - 1) / (args['pipeline_parallel_size'] - 1 + args['num_microbatch'])
         }
-    
-    # def generate_report(self, save_path):
-    #     output_df = None
-        
-    #     first_stage_sync_time = None
-        
-    #     for stage_id, rank in enumerate(sorted(self.t.traces.keys())):
-    #         trace_df = self.t.traces[rank]
-    #         sorted_trace_df = trace_df.sort_values(by=['ts', 'dur'], ascending=[True, False])
-    #         sorted_trace_df['end'] = sorted_trace_df['ts'] + sorted_trace_df['dur']
-            
-    #         time_per_batch = sorted_trace_df['end'].max() - sorted_trace_df['ts'].min()
-            
-    #         all_forward_steps_df = NameFilter(create_regex_for_prefix_match(['forward_step']))(sorted_trace_df)
-    #         forward_step_time = all_forward_steps_df['dur'].mean()
-    #         # steady_forward_steps_df = all_forward_steps_df.iloc[self.t.pipeline_parallel_size-stage_id:]
-    #         # forward_step_time = steady_forward_steps_df['dur'].mean()
-
-    #         all_backward_steps_df = NameFilter(create_regex_for_prefix_match(['backward_step']))(sorted_trace_df)
-    #         backward_step_time = all_backward_steps_df['dur'].mean()
-    #         # steady_backward_steps_df = all_backward_steps_df.iloc[:-self.t.pipeline_parallel_size+stage_id]
-    #         # backward_step_time = steady_backward_steps_df['dur'].mean()
-            
-    #         compute_time_total = all_forward_steps_df['dur'].sum() + all_backward_steps_df['dur'].sum()
-
-    #         all_send_df = NameFilter(create_regex_for_prefix_match(['mccl:send']))(sorted_trace_df)
-    #         all_recv_df = NameFilter(create_regex_for_prefix_match(['mccl:recv']))(sorted_trace_df)
-    #         comm_time_total = all_send_df['dur'].sum() + all_recv_df['dur'].sum()
-                        
-    #         if stage_id == 0:
-    #             bubble_time_head = 0
-    #         else:
-    #             first_recv_index = all_recv_df.index[0]
-    #             bubble_time_head = all_recv_df.loc[first_recv_index]['wait_time']
-    #             all_recv_df.loc[first_recv_index, 'wait_time'] = 0
-            
-    #         if stage_id == self.t.pipeline_parallel_size - 1:
-    #             bubble_time_middle = 0
-    #         else:
-    #             max_send_wait_time = all_send_df['wait_time'].max()
-    #             max_recv_wait_time = all_recv_df['wait_time'].max()
-    #             if max_send_wait_time >= max_recv_wait_time:
-    #                 max_wait_time = max_send_wait_time
-    #                 max_wait_time_index = all_send_df[all_send_df['wait_time'] == max_send_wait_time].index[0]
-    #                 all_send_df.loc[max_wait_time_index, 'wait_time'] = 0
-    #             else:
-    #                 max_wait_time = max_recv_wait_time
-    #                 max_wait_time_index = all_recv_df[all_recv_df['wait_time'] == max_recv_wait_time].index[0]
-    #                 all_recv_df.loc[max_wait_time_index, 'wait_time'] = 0
-                
-    #             bubble_time_middle = max_wait_time
-            
-    #         end_recv_index = all_recv_df.index[-(self.t.pipeline_parallel_size - 1 - stage_id):]
-    #         bubble_time_tail = all_recv_df.loc[end_recv_index]['wait_time'].sum()
-    #         all_recv_df.loc[end_recv_index, 'wait_time'] = 0
-            
-    #         final_sync_time = sorted_trace_df[sorted_trace_df['s_name'] == '_unscale_main_grads_and_check_for_nan']['dur'].values[0]
-    #         if first_stage_sync_time is None:
-    #             first_stage_sync_time = final_sync_time
-
-    #         bubble_time_final = final_sync_time - first_stage_sync_time
-            
-    #         bubble_time_total = bubble_time_head + bubble_time_middle + bubble_time_tail + bubble_time_final
-    #         comm_time_total += bubble_time_final
-            
-    #         comm_time_true = all_send_df['comm_time'].sum() + all_recv_df['comm_time'].sum()
-    #         overhead_wait_time_total = all_send_df['wait_time'].sum() + all_recv_df['wait_time'].sum()
-
-    #         num_microbatch = len(all_forward_steps_df)
-    #         assert(len(all_backward_steps_df) == num_microbatch)
-
-    #         info_per_rank = {
-    #             'rank': rank,
-    #             'time_per_batch': time_per_batch/1000,
-    #             'microbatch_num': num_microbatch,
-    #             'forward_step_time': forward_step_time/1000,
-    #             'backward_step_time': backward_step_time/1000,
-    #             'time_per_microbatch': (forward_step_time+backward_step_time)/1000,
-    #             'compute_time_total': compute_time_total/1000,
-    #             'comm_time_total': comm_time_total/1000,
-    #             'comm_time_true': comm_time_true/1000,
-    #             'overhead_wait_time_total': overhead_wait_time_total/1000,
-    #             'bubble_time_total': bubble_time_total/1000,
-    #             'bubble_time_detail': [bubble_time_head/1000, bubble_time_middle/1000, bubble_time_tail/1000, bubble_time_final/1000],
-    #             'comp_time_ratio': compute_time_total / time_per_batch,
-    #             'comm_time_ratio': comm_time_total / time_per_batch,
-    #             'comm_time_true_ratio': comm_time_true / time_per_batch,
-    #             'overhead_wait_time_ratio': overhead_wait_time_total / time_per_batch,
-    #             'bubble_time_ratio': bubble_time_total / time_per_batch,
-    #             'bubble_time_ratio_theoretical': (self.t.pipeline_parallel_size - 1) / (self.t.pipeline_parallel_size - 1 + num_microbatch)
-    #         }
-
-    #         if output_df is None:
-    #             output_df = pd.DataFrame([info_per_rank])
-    #         else:
-    #             output_df.loc[len(output_df)] = info_per_rank
-        
-    #     if save_path is not None:
-    #         output_df.to_csv(save_path, header=True, index=False)
-    #     return output_df
     

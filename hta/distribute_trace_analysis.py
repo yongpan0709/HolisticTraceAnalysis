@@ -16,6 +16,31 @@ import time
 import numpy as np
 from sklearn.ensemble import IsolationForest
 
+MAX_INT = 2**31 - 1  # Maximum size for each chunk
+
+def send_by_chunk(data, dest, tag, comm):
+    data = np.asarray(data, dtype='b')  # Convert to byte array
+    total_size = data.nbytes
+    comm.send(total_size, dest=dest, tag=tag)  # Send total size first
+
+    num_chunks = (total_size + MAX_INT - 1) // MAX_INT  # Calculate number of chunks
+    for i in range(num_chunks):
+        start = i * MAX_INT
+        end = min(start + MAX_INT, total_size)
+        comm.Send([data[start:end], MPI.BYTE], dest=dest, tag=tag + i + 1)
+
+def recv_by_chunk(source, tag, comm):
+    total_size = comm.recv(source=source, tag=tag)  # Receive total size first
+    recv_data = np.empty(total_size, dtype='b')  # Allocate buffer
+
+    num_chunks = (total_size + MAX_INT - 1) // MAX_INT  # Calculate number of chunks
+    for i in range(num_chunks):
+        start = i * MAX_INT
+        end = min(start + MAX_INT, total_size)
+        comm.Recv([recv_data[start:end], MPI.BYTE], source=source, tag=tag + i + 1)
+    
+    return recv_data
+
 def gatherv_p2p(comm, sendbuf, recvbuf, root=0):
     rank = comm.Get_rank()
     size = comm.Get_size()
@@ -29,11 +54,10 @@ def gatherv_p2p(comm, sendbuf, recvbuf, root=0):
             if i == root:
                 recv_data[displs[i]:displs[i] + recvcounts[i]] = sendbuf
             else:
-                temp_recvbuf = np.empty(recvcounts[i], dtype='b')
-                comm.Recv([temp_recvbuf, recvtype], source=i)
+                temp_recvbuf = recv_by_chunk(source=i, tag=0, comm=comm)
                 recv_data[displs[i]:displs[i] + recvcounts[i]] = temp_recvbuf
     else:
-        comm.Send([sendbuf, MPI.BYTE], dest=root)
+        send_by_chunk(data=sendbuf, dest=root, tag=0, comm=comm)
 
 def gather_data(comm, send_data, use_p2p=True):
     rank = comm.Get_rank()

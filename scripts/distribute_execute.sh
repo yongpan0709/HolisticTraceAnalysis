@@ -39,6 +39,10 @@ HOST_ID=0
 for host in "${HOSTLIST[@]}"; do
   echo "Transferring script to $host with HOST_ID=$HOST_ID..."
   scp "$SCRIPT_PATH" "${host}:/tmp/" &
+  SCP_PID=$!
+  wait $SCP_PID # Wait for the scp to complete
+
+  echo "Executing script on $host with HOST_ID=$HOST_ID..."
   ssh "$host" "HOST_ID=$HOST_ID bash /tmp/$(basename "$SCRIPT_PATH")" &
   ((HOST_ID++))  # Increment HOST_ID for each host
 done

@@ -905,6 +905,7 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         ]
         
         cpu_op_names_list = [
+            'aten::embedding',
             'aten::matmul', 
             'aten::rms_norm_forward', 
             'aten::scaled_dot_product_attention', 
@@ -1085,6 +1086,4 @@ class MegatronPipelineParrallelGroupTrace(Trace):
     def set_rank_info(self):
         for rank in self.get_ranks():
             self.traces[rank]['rank'] = rank    
-    
-    
     

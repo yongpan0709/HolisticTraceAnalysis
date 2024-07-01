@@ -6,6 +6,7 @@ from collections import defaultdict
 from enum import auto, Flag
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import os
+import copy
 
 import pandas as pd
 
@@ -634,9 +635,9 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         self.t.display_traces_info(self.t.traces)
         self.t.save_traces(f'{self.output_dir}/after_filter.json')
         
-        self.call_graph = CallGraph(self.t)
+        call_graph = CallGraph(self.t)
         logger.info('construct CallGraph')
-        self.call_graph.print_call_graph(f'{self.output_dir}/init_graph.txt')
+        call_graph.print_call_graph(f'{self.output_dir}/init_graph.txt')
         
         target_duplicate_name_list = [
             'forward_step',
@@ -649,19 +650,17 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
             'send_backward'
         ]
         
-        self.call_graph.eliminate_duplicate_named_children(target_duplicate_name_list)
+        call_graph.eliminate_duplicate_named_children(target_duplicate_name_list)
         logger.info('eliminate_duplicate_named_children')
         
-        self.call_graph.rename_children_with_duplicate_names()
+        call_graph.rename_children_with_duplicate_names()
         logger.info('rename_children_with_duplicate_names')
-        self.call_graph.mark_send_recv_direction()
+        call_graph.mark_send_recv_direction()
         logger.info('mark_send_recv_direction')
-        self.call_graph.assign_full_names()
+        call_graph.assign_full_names()
         logger.info('assign_full_names')
-        # self.call_graph.print_call_graph(f'{self.output_dir}/full_names.txt')
         
-        self.t.traces = self.call_graph.trace_data.traces
-        
+        self.t.traces = call_graph.trace_data.traces
         self.t.set_micro_batch_id()
         logger.info('set_micro_batch_id')
         self.t.establish_p2p_link_on_adjacent_ranks()
@@ -669,11 +668,14 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         
         self.t.traces = self.t.parallel_apply(calculate_comm_volume_for_trace_df)
         self.t.traces = self.t.parallel_apply(calculate_flops_for_trace_df)
-        CallGraph(self.t).print_call_graph(f'{self.output_dir}/full_names.txt')
+        call_graph = CallGraph(self.t)
+        call_graph.print_call_graph(f'{self.output_dir}/full_names.txt')
         
-        self.t.traces = self.t.parallel_apply(self.t.keep_comm_span_only) 
+        useful_spans_total = copy.deepcopy(self.t.traces)
+        self.t.traces = self.t.parallel_apply(self.t.keep_comm_span_only)
         self.t.save_traces_with_p2p_comm(f'{self.output_dir}/trace_only_comm_all_ranks_with_flow.json')
         self.generate_report(f'{self.output_dir}/report.csv')
+        self.t.traces = useful_spans_total
     
     def generate_report(self, save_path):
         output_df = None

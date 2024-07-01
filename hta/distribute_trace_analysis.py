@@ -286,8 +286,6 @@ class DistributedMegatronTraceAnalysis:
     
     def detect_anomalies(self):
         self.detect_anomalies_zscore_and_relative()
-        # return self.detect_anomalies_zscore()
-        # return self.detect_anomalies_ml()
     
     def detect_anomalies_zscore_and_relative(self, zscore_threshold=2, min_std=0.1, relative_threshold=0.5):
         """
@@ -319,28 +317,6 @@ class DistributedMegatronTraceAnalysis:
         self.anomaly_status = self.total_trace_df['is_anomaly']
 
         return self.total_trace_df[['full_name', 'pp_stage', 'dur', 'z_score', 'relative_deviation', 'is_anomaly']]
-
-    def detect_anomalies_zscore(self, threshold=1, min_std=0.1):
-        # Calculate the mean and standard deviation for each full_name and pp_stage group
-        mean_std_df = self.total_trace_df.groupby(['full_name', 'pp_stage'])['dur'].agg(['mean', 'std']).reset_index()
-        
-        # Set a minimum standard deviation to avoid extremely small values
-        mean_std_df['std'] = mean_std_df['std'].apply(lambda x: max(x, min_std))
-        
-        # Calculate Z-Score
-        self.total_trace_df = self.total_trace_df.merge(mean_std_df, on=['full_name', 'pp_stage'], suffixes=('', '_group'))
-        self.total_trace_df['z_score'] = (self.total_trace_df['dur'] - self.total_trace_df['mean']) / self.total_trace_df['std']
-        
-        # Mark anomalies
-        self.total_trace_df['is_anomaly'] = self.total_trace_df['z_score'].abs() > threshold
-        self.anomaly_status = self.total_trace_df['is_anomaly']
-    
-    def detect_anomalies_ml(self):
-        # Apply Isolation Forest
-        iso_forest = IsolationForest()  # Set contamination to the expected proportion of anomalies
-        self.total_trace_df['is_anomaly'] = iso_forest.fit_predict(self.total_trace_df[['dur']])
-        self.total_trace_df['is_anomaly'] = self.total_trace_df['is_anomaly'] == -1
-        self.anomaly_status = self.total_trace_df['is_anomaly']
     
     def plot_anomalies(self):
         if self.anomaly_status is None:
@@ -388,8 +364,9 @@ class DistributedMegatronTraceAnalysis:
                 plt.tight_layout()
 
                 # Save the plot to a file, with the filename based on 'full_name' and 'pp_stage'
-                filename = f"{row['full_name'].replace('/', '.')}_stage{row['pp_stage']}.png"  # Replace '/' to avoid filename issues
+                filename = f"{row['full_name']}_stage{row['pp_stage']}.png"  # Replace '/' to avoid filename issues
                 filename = os.path.join(self.stragglers_dir, filename)
+                os.makedirs(os.path.dirname(filename), exist_ok=True)
                 plt.savefig(filename)
 
                 # Close the plot to release memory

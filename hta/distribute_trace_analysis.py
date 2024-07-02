@@ -281,13 +281,33 @@ class DistributedMegatronTraceAnalysis:
         if self.total_trace_df is None:
             return
         
-        self.detect_anomalies()
-        self.plot_anomalies()
+        self.detect_anomalies_between_pp_group()
+        self.detect_anomalies_between_layers()
     
-    def detect_anomalies(self):
-        self.detect_anomalies_zscore_and_relative()
+    def detect_anomalies_between_pp_group(self):
+        group_keys = ['full_name', 'pp_stage']
+        anomaly_key = 'is_anomaly_between_pp_group'
+        output_dir = os.path.join(self.stragglers_dir, 'stragglers_bewteen_pp_group')
+        self.detect_anomalies_zscore_and_relative(group_keys, anomaly_key)
+        self.plot_anomalies_between_pp_group(output_dir)
     
-    def detect_anomalies_zscore_and_relative(self, zscore_threshold=2, min_std=0.1, relative_threshold=0.5):
+    def detect_anomalies_between_layers(self):
+        self.set_full_name_without_index(name_index_list=['forward_step', 'backward_step', 'ParallelTransformerLayer'])
+        group_keys = ['full_name_without_index']
+        anomaly_key = 'is_anomaly_between_layers'
+        output_dir = os.path.join(self.stragglers_dir, 'stragglers_bewteen_layers')
+        self.detect_anomalies_zscore_and_relative(group_keys, anomaly_key)
+        self.plot_anomalies_between_layers(output_dir)
+    
+    def set_full_name_without_index(self, name_index_list):
+        self.total_trace_df['full_name_without_index'] = self.total_trace_df['full_name']
+        for name in name_index_list:
+            self.total_trace_df['full_name_without_index'] = self.total_trace_df['full_name_without_index'].str.replace(f'{name}_\d+', name, regex=True)
+        self.total_trace_df['full_name_without_index'] = (
+            'rank' + self.total_trace_df['rank'].astype(str) + '/' + self.total_trace_df['full_name_without_index']
+        )
+
+    def detect_anomalies_zscore_and_relative(self, group_keys=['full_name'], anomaly_key='is_anomaly', zscore_threshold=2, min_std=0.1, relative_threshold=0.5):
         """
         Detect anomalies based on Z-Score and relative deviation.
 
@@ -296,15 +316,21 @@ class DistributedMegatronTraceAnalysis:
             min_std (float): The minimum standard deviation to avoid extremely small values.
             relative_threshold (float): The relative deviation threshold to detect anomalies.
         """
+        # Filter out groups with size 1
+        group_sizes = self.total_trace_df.groupby(group_keys).size()
+        valid_groups = group_sizes[group_sizes > 1].index
 
+        # Apply the filter to the DataFrame
+        filtered_df = self.total_trace_df[self.total_trace_df.set_index(group_keys).index.isin(valid_groups)]
+        
         # Calculate the mean and standard deviation for each full_name and pp_stage group
-        mean_std_df = self.total_trace_df.groupby(['full_name', 'pp_stage'])['dur'].agg(['mean', 'std']).reset_index()
+        mean_std_df = filtered_df.groupby(group_keys)['dur'].agg(['mean', 'std']).reset_index()
         
         # Set a minimum standard deviation to avoid extremely small values
         mean_std_df['std'] = mean_std_df['std'].apply(lambda x: max(x, min_std))
         
         # Merge mean and std with the original dataframe
-        self.total_trace_df = self.total_trace_df.merge(mean_std_df, on=['full_name', 'pp_stage'], suffixes=('', '_group'))
+        self.total_trace_df = self.total_trace_df.merge(mean_std_df, on=group_keys, suffixes=('', '_group'))
         
         # Calculate Z-Score
         self.total_trace_df['z_score'] = (self.total_trace_df['dur'] - self.total_trace_df['mean']) / self.total_trace_df['std']
@@ -313,27 +339,31 @@ class DistributedMegatronTraceAnalysis:
         self.total_trace_df['relative_deviation'] = (self.total_trace_df['dur'] - self.total_trace_df['mean']).abs() / self.total_trace_df['mean']
         
         # Mark anomalies based on Z-Score and relative deviation
-        self.total_trace_df['is_anomaly'] = (self.total_trace_df['z_score'].abs() > zscore_threshold) | (self.total_trace_df['relative_deviation'] > relative_threshold)
-        self.anomaly_status = self.total_trace_df['is_anomaly']
-
-        return self.total_trace_df[['full_name', 'pp_stage', 'dur', 'z_score', 'relative_deviation', 'is_anomaly']]
+        self.total_trace_df[anomaly_key] = (self.total_trace_df['z_score'].abs() > zscore_threshold) | (self.total_trace_df['relative_deviation'] > relative_threshold)
+        self.anomaly_status = self.total_trace_df[anomaly_key]
     
-    def plot_anomalies(self):
+    def plot_anomalies_between_pp_group(self, output_dir=''):
         if self.anomaly_status is None:
             logger.info("Anomalies have not been detected. Please run detect_anomalies first.")
             return
 
-        spans_with_anomalies = self.total_trace_df[self.anomaly_status].groupby(['full_name', 'pp_stage']).any().reset_index()
-        num_spans_with_anomalies = spans_with_anomalies['is_anomaly'].sum()
+        group_keys = ['full_name', 'pp_stage']
+        anomaly_key = 'is_anomaly_between_pp_group'
+        
+        spans_with_anomalies = self.total_trace_df[self.anomaly_status].groupby(group_keys).any().reset_index()
+        num_spans_with_anomalies = spans_with_anomalies[anomaly_key].sum()
 
         if num_spans_with_anomalies == 0:
             logger.info("No anomalies found.")
             return
 
         for _, row in spans_with_anomalies.iterrows():
-            if row['is_anomaly']:
-                subset = self.total_trace_df[(self.total_trace_df['full_name'] == row['full_name']) &
-                                            (self.total_trace_df['pp_stage'] == row['pp_stage'])]
+            if row[anomaly_key]:
+                subset_condition = True
+                for key in group_keys:
+                    subset_condition &= (self.total_trace_df[key] == row[key])
+
+                subset = self.total_trace_df[subset_condition]
 
                 # Sort subset by 'rank' column
                 subset = subset.sort_values(by='rank')
@@ -342,13 +372,13 @@ class DistributedMegatronTraceAnalysis:
                 fig, ax = plt.subplots(figsize=(12, 6))
 
                 # Check if all values in 'is_anomaly' are the same
-                if subset['is_anomaly'].all() or not subset['is_anomaly'].any():
+                if subset[anomaly_key].all() or not subset[anomaly_key].any():
                     # All values are the same, use red as the default color
                     default_color = 'red'
                     sns.barplot(x='rank', y='dur', data=subset, color=default_color, ax=ax)
                 else:
                     # Mixed values, use blue and red
-                    sns.barplot(x='rank', y='dur', data=subset, hue='is_anomaly', dodge=False, palette={True: 'red', False: 'blue'}, ax=ax, legend=False)
+                    sns.barplot(x='rank', y='dur', data=subset, hue=anomaly_key, dodge=False, palette={True: 'red', False: 'blue'}, ax=ax, legend=False)
                 
                 # Set the title of the chart
                 ax.set_title(f'{row["full_name"]} - pp stage {row["pp_stage"]}')
@@ -365,7 +395,92 @@ class DistributedMegatronTraceAnalysis:
 
                 # Save the plot to a file, with the filename based on 'full_name' and 'pp_stage'
                 filename = f"{row['full_name']}_stage{row['pp_stage']}.png"  # Replace '/' to avoid filename issues
-                filename = os.path.join(self.stragglers_dir, filename)
+                filename = os.path.join(output_dir, filename)
+                os.makedirs(os.path.dirname(filename), exist_ok=True)
+                plt.savefig(filename)
+
+                # Close the plot to release memory
+                plt.close(fig)
+    
+    def plot_anomalies_between_layers(self, output_dir=''):
+        if self.anomaly_status is None:
+            logger.info("Anomalies have not been detected. Please run detect_anomalies first.")
+            return
+
+        group_keys = ['full_name_without_index']
+        anomaly_key = 'is_anomaly_between_layers'
+        
+        spans_with_anomalies = self.total_trace_df[self.anomaly_status].groupby(group_keys).any().reset_index()
+        num_spans_with_anomalies = spans_with_anomalies[anomaly_key].sum()
+
+        if num_spans_with_anomalies == 0:
+            logger.info("No anomalies found.")
+            return
+
+        for _, row in spans_with_anomalies.iterrows():
+            if row[anomaly_key]:
+                subset_condition = True
+                for key in group_keys:
+                    subset_condition &= (self.total_trace_df[key] == row[key])
+
+                subset = self.total_trace_df[subset_condition].copy()
+
+                subset['layer_index'] = subset['full_name'].str.extract(r'ParallelTransformerLayer_(\d+)', expand=False)
+                subset['forward_step_index'] = subset['full_name'].str.extract(r'forward_step_(\d+)', expand=False)
+                subset['backward_step_index'] = subset['full_name'].str.extract(r'backward_step_(\d+)', expand=False)
+                
+                subset['forward_step_index'].fillna(-1, inplace=True)
+                subset['backward_step_index'].fillna(-1, inplace=True)
+                subset['layer_index'].fillna(-1, inplace=True)
+                
+                def custom_sort(row):
+                    if row['forward_step_index'] != -1:
+                        return (int(row['forward_step_index']), int(row['layer_index']), 0)
+                    elif row['backward_step_index'] != -1:
+                        return (int(row['backward_step_index']), int(row['layer_index']), 1)
+                    else:
+                        return (float('inf'), float('inf'), float('inf'))
+                    
+                subset['sorting_key'] = subset.apply(custom_sort, axis=1)
+                subset = subset.sort_values(by=['sorting_key'])
+                
+                subset['x_label'] = subset.apply(
+                    lambda row: (
+                        f"f{row['forward_step_index']}"
+                        if 'forward_step' in row['full_name']
+                        else f"b{row['backward_step_index']}"
+                    ) + (f"l{row['layer_index']}" if row['layer_index'] != -1 else ""),
+                    axis=1
+                )
+                
+                # Create a new figure and axis object
+                fig, ax = plt.subplots(figsize=(12, 6))
+
+                # Check if all values in 'is_anomaly' are the same
+                if subset[anomaly_key].all() or not subset[anomaly_key].any():
+                    # All values are the same, use red as the default color
+                    default_color = 'red'
+                    sns.barplot(x='x_label', y='dur', data=subset, color=default_color, ax=ax)
+                else:
+                    # Mixed values, use blue and red
+                    sns.barplot(x='x_label', y='dur', data=subset, hue=anomaly_key, dodge=False, palette={True: 'red', False: 'blue'}, ax=ax, legend=False)
+                
+                # Set the title of the chart
+                ax.set_title(f'{row["full_name_without_index"]}')
+
+                # Set x-axis labels to the values in the sorted 'rank' column
+                ax.set_xticks(range(len(subset)))
+                ax.set_xticklabels(subset['x_label'].astype(str), rotation=45)
+
+                # Set y-axis label
+                ax.set_ylabel('Duration')
+
+                # Adjust layout to fit labels
+                plt.tight_layout()
+
+                # Save the plot to a file, with the filename based on 'full_name' and 'pp_stage'
+                filename = f"{row['full_name_without_index']}.png"  # Replace '/' to avoid filename issues
+                filename = os.path.join(output_dir, filename)
                 os.makedirs(os.path.dirname(filename), exist_ok=True)
                 plt.savefig(filename)
 

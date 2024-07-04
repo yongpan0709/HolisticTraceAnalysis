@@ -139,7 +139,8 @@ class CallGraph:
         s_map: pd.Series = pd.Series(self.trace_data.symbol_table.get_sym_id_map())
         s_tab: pd.Series = pd.Series(self.trace_data.symbol_table.get_sym_table())
         main_thread_indicators: pd.Series = s_map[
-            s_map.index.str.startswith("ProfilerStep#")
+            s_map.index.str.startswith("ProfilerStep#") | 
+            s_map.index.str.startswith("forward_step")
         ]
         bwd_thread_indicators: pd.Series = s_map[s_map.index.str.contains("autograd::")]
         
@@ -177,6 +178,7 @@ class CallGraph:
                 )
                 
             self._connect_stacks(rank)
+            logger.debug("connecting stacks of forward and backward threads")
             self._update_rank_stack_mapping(rank)
         
         # Save call stack information to the dataframe
@@ -247,8 +249,6 @@ class CallGraph:
                 f"Created CallStackGraph of {csg.identity}: num_events={csg.df.shape[0]}, num_nodes={len(csg.nodes)}"
                 f"in {t1-t0:.2f} seconds"
             )
-            
-        logger.debug("connecting stacks of forward and backward threads")
 
         self._normalize_stack_columns(df)
         
@@ -495,8 +495,29 @@ class CallGraph:
         first_call_stack_id, first_call_stack = next(iter(self.rank_to_stacks[rank].items()))
         return first_call_stack_id, first_call_stack
     
+    def get_main_stack_on_rank(self, rank):
+        main_stack_info = self.mapping.loc[
+            self.mapping["rank"].eq(rank) & self.mapping["label"].eq("main")
+        ]
+        
+        if len(main_stack_info) != 1:
+            logger.warning(f'no main stack on rank {rank}, use first stack')
+            return self.get_first_stack_on_rank(rank)
+
+        main_stack_info = main_stack_info.iloc[0].to_dict()
+        main_stack_id = None
+        for call_stack_id in self.rank_to_stacks[rank].keys():
+            if main_stack_info['rank'] == call_stack_id.rank and \
+                main_stack_info['pid'] == call_stack_id.pid and \
+                main_stack_info['tid'] == call_stack_id.tid:
+                    main_stack_id = call_stack_id
+                    break
+        assert(main_stack_id is not None)
+        main_stack = self.rank_to_stacks[rank][main_stack_id]
+        return main_stack_id, main_stack
+
     def apply_function_for_parallel(self, func_name, inputs_list=None):
-        stacks = [self.get_first_stack_on_rank(rank) for rank in self.ranks]
+        stacks = [self.get_main_stack_on_rank(rank) for rank in self.ranks]
         stacks_ids = [stack[0] for stack in stacks]
         stacks_instances = [stack[1] for stack in stacks]
         self.call_stacks = [stack for stack in self.call_stacks if stack not in stacks_instances]

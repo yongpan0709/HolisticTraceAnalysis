@@ -631,12 +631,14 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
     def analyze_pipeline_parallel(self):
         self.t.display_traces_info(self.t.traces)
         
+        logger.info('keep useful spans')
         self.t.traces = self.t.parallel_apply(self.t.keep_useful_span)
         self.t.display_traces_info(self.t.traces)
         self.t.save_traces(f'{self.output_dir}/after_filter.json')
         
+        logger.info('construct CallGraph for traces')
         call_graph = CallGraph(self.t)
-        logger.info('construct CallGraph')
+        logger.info('print init call graph ')
         call_graph.print_call_graph(f'{self.output_dir}/init_graph.txt')
         
         target_duplicate_name_list = [
@@ -650,38 +652,55 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
             'send_backward'
         ]
         
-        call_graph.eliminate_duplicate_named_children(target_duplicate_name_list)
         logger.info('eliminate_duplicate_named_children')
+        call_graph.eliminate_duplicate_named_children(target_duplicate_name_list)
+        # call_graph.print_call_graph(f'{self.output_dir}/eliminate_duplicate_named_children.txt')
         
-        call_graph.rename_children_with_duplicate_names()
         logger.info('rename_children_with_duplicate_names')
-        call_graph.mark_send_recv_direction()
+        call_graph.rename_children_with_duplicate_names()
+        # call_graph.print_call_graph(f'{self.output_dir}/rename_children_with_duplicate_names.txt')
+        
         logger.info('mark_send_recv_direction')
-        call_graph.assign_full_names()
+        call_graph.mark_send_recv_direction()
+        # call_graph.print_call_graph(f'{self.output_dir}/mark_send_recv_direction.txt')
+        
         logger.info('assign_full_names')
-        
+        call_graph.assign_full_names()
+        # call_graph.print_call_graph(f'{self.output_dir}/assign_full_names.txt')
+                
         self.t.traces = call_graph.trace_data.traces
-        self.t.set_micro_batch_id()
-        logger.info('set_micro_batch_id')
-        self.t.establish_p2p_link_on_adjacent_ranks()
-        logger.info('establish_p2p_link_on_adjacent_ranks')
         
+        logger.info('keep comm spans only')
+        self.t.traces_comm_only = self.t.parallel_apply(self.t.keep_comm_span_only)
+        self.t.display_traces_info(self.t.traces_comm_only)
+        
+        logger.info('set_micro_batch_id')
+        self.t.set_micro_batch_id() 
+        # self.t.save_traces(f'{self.output_dir}/set_micro_batch_id.json')
+        
+        logger.info('establish_p2p_link_on_adjacent_ranks')
+        self.t.establish_p2p_link_on_adjacent_ranks() 
+        
+        logger.info('calculate_comm_volume_for_trace_df')
         self.t.traces = self.t.parallel_apply(calculate_comm_volume_for_trace_df)
+        logger.info('calculate_flops_for_trace_df')
         self.t.traces = self.t.parallel_apply(calculate_flops_for_trace_df)
+        
+        logger.info('construct call graphs after calculating bandwidth and flops')
         call_graph = CallGraph(self.t)
+        logger.info('print final call graph')
         call_graph.print_call_graph(f'{self.output_dir}/full_names.txt')
         
-        useful_spans_total = copy.deepcopy(self.t.traces)
-        self.t.traces = self.t.parallel_apply(self.t.keep_comm_span_only)
-        self.t.save_traces_with_p2p_comm(f'{self.output_dir}/trace_only_comm_all_ranks_with_flow.json')
+        logger.info('save_traces_with_p2p_comm')
+        self.t.save_traces_with_p2p_comm(f'{self.output_dir}/trace_only_comm_all_ranks_with_flow.json', traces=self.t.traces_comm_only)
+        logger.info('generate_report')
         self.generate_report(f'{self.output_dir}/report.csv')
-        self.t.traces = useful_spans_total
     
     def generate_report(self, save_path):
         output_df = None
         first_stage_optimizer_step = None
 
-        for stage_id, rank in enumerate(sorted(self.t.traces.keys())):
+        for stage_id, rank in enumerate(sorted(self.t.traces_comm_only.keys())):
             trace_df = self.t.traces[rank]
             sorted_trace_df = self._preprocess_trace_df(trace_df)
 

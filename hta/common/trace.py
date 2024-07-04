@@ -790,6 +790,7 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         self.tensor_parallel_size = tensor_parallel_size
         self.pipeline_parallel_size = pipeline_parallel_size
         self.with_gpu_kernel = False
+        self.traces_comm_only : Dict[int, pd.DataFrame] = {}
             
     def load_traces(self, include_last_profiler_step: Optional[bool] = False) -> None:
         if self.is_parsed:
@@ -964,6 +965,9 @@ class MegatronPipelineParrallelGroupTrace(Trace):
                 p2p_devices_pairs.append([ranks[i], ranks[i+1]])
         return p2p_devices_pairs 
 
+    def get_useful_trace_df(self, trace_df):
+        return trace_df[~(trace_df[['send_prev', 'send_next', 'recv_prev', 'recv_next']] < 0).all(axis=1)]
+    
     def get_p2p_trace_for_one_pair(self, rank_prev, rank_next):
         """
         Compute the point-to-point (P2P) communication times between two ranks.
@@ -978,14 +982,17 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         # Get the DataFrames for the given ranks
         trace_df_prev = self.traces[rank_prev]
         trace_df_next = self.traces[rank_next]
+        
+        useful_trace_df_prev = self.get_useful_trace_df(trace_df_prev)
+        useful_trace_df_next = self.get_useful_trace_df(trace_df_next)
 
         # Compute forward P2P communication times
-        df_p2p_forward = self._compute_p2p_forward(trace_df_prev, trace_df_next)
+        df_p2p_forward = self._compute_p2p_forward(useful_trace_df_prev, useful_trace_df_next)
         self._update_comm_time(trace_df_prev, df_p2p_forward, 'send_next', 'send_next_on_prev')
         self._update_comm_time(trace_df_next, df_p2p_forward, 'recv_prev', 'recv_prev_on_next')
 
         # Compute backward P2P communication times
-        df_p2p_backward = self._compute_p2p_backward(trace_df_prev, trace_df_next)
+        df_p2p_backward = self._compute_p2p_backward(useful_trace_df_prev, useful_trace_df_next)
         self._update_comm_time(trace_df_prev, df_p2p_backward, 'recv_next', 'recv_next_on_prev')
         self._update_comm_time(trace_df_next, df_p2p_backward, 'send_prev', 'send_prev_on_next')
 
@@ -1009,6 +1016,7 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         Returns:
             pd.DataFrame: A DataFrame containing the forward P2P communication times.
         """
+        
         df_p2p_forward = pd.merge(df_prev, df_next, left_on='send_next', right_on='recv_prev', how='inner', suffixes=('_on_prev', '_on_next'))
         df_p2p_forward = df_p2p_forward[df_p2p_forward['send_next_on_prev'] >= 0]
         df_p2p_forward['p2p_forward'] = True
@@ -1079,9 +1087,15 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         
         self.trace_df_p2p_flow_events = self.combine_into_one_trace(self.traces_p2p_comm)
     
-    def save_traces_with_p2p_comm(self, save_path):
-        trace_df_all_ranks = self.combine_into_one_trace(self.traces)
-        save_trace_df_to_file(trace_df_all_ranks, save_path, self.trace_df_p2p_flow_events, next(iter(self.meta_data.values())))
+    def save_traces_with_p2p_comm(self, save_path, traces=None, trace_df_p2p_flow_events=None, meta_data=None):
+        if traces is None:
+            traces = self.traces
+        if trace_df_p2p_flow_events is None:
+            trace_df_p2p_flow_events = self.trace_df_p2p_flow_events
+        if meta_data is None:
+            meta_data = self.meta_data
+        trace_df_all_ranks = self.combine_into_one_trace(traces)
+        save_trace_df_to_file(trace_df_all_ranks, save_path, trace_df_p2p_flow_events, next(iter(meta_data.values())))
     
     def set_rank_info(self):
         for rank in self.get_ranks():

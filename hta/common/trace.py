@@ -144,7 +144,10 @@ def get_cpu_gpu_correlation(df: pd.DataFrame) -> pd.DataFrame:
         0	121898	    121900
         1	121906	    121908
     """
-    kernel_indices = df[df["stream"].gt(0) & df["index_correlation"].gt(0)]["index"]
+    """
+    Todo: Almost MUSA Kernels are running on stream 0.
+    """
+    kernel_indices = df[df["stream"].ge(0) & df["index_correlation"].gt(0)]["index"]
     cpu_gpu_correlation = (
         df.loc[kernel_indices][["index", "index_correlation"]]
         .copy()

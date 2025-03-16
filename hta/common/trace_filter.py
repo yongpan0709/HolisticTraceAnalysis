@@ -327,7 +327,10 @@ def _filter_gpu_kernels_with_cuda_sync(
     # run on GPU
     event_sync_id = symbol_table.get_sym_id_map().get("Event Sync", -1)
     context_sync_id = symbol_table.get_sym_id_map().get("Context Sync", -1)
-    return (df["stream"] > 0) | df["name"].isin([event_sync_id, context_sync_id])
+    """
+    Todo: Almost MUSA Kernels are running on stream 0.
+    """
+    return (df["stream"] >= 0) | df["name"].isin([event_sync_id, context_sync_id])
 
 
 class GPUKernelFilter(Filter):

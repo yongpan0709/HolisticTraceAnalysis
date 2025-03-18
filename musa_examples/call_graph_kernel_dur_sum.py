@@ -3,9 +3,13 @@ from hta.common.trace import Trace
 from hta.configs.config import logger
 from hta.configs.parser_config import  ParserConfig, AVAILABLE_ARGS
 from hta.common.trace_call_graph import CallGraph
+from collections import defaultdict
+from typing import Dict, List
+import numpy as np
+import pandas as pd
 
 base_dir = "../"
-trace_dir = str(Path(base_dir).joinpath("ds-trace-files"))
+trace_dir = str(Path(base_dir).joinpath("ds"))
 cfg = ParserConfig.get_default_cfg()
 # config for extracting shape info
 cfg.add_args(ParserConfig.ARGS_INPUT_SHAPE)
@@ -17,8 +21,46 @@ t.parse_traces()
 t.decode_symbol_ids(use_shorten_name=False)
 cg = CallGraph(t, ranks=[0])
 
-print("Get the info of Func nn.Module: MLASelfAttention_0")
-MLASelfAttention = cg.trace_data.traces[0][cg.trace_data.traces[0]['s_name']=="nn.Module: MLASelfAttention_0"]
+def get_backward_duration(df, forward_sym_id): 
+    forward_index  = df[df['name'] == forward_sym_id].index
+    forward_children_with_bwd_id: Dict[np.int64, List[np.int64]] = defaultdict(list)
+    """
+    Todo: refact to void checking children and grand-children funcs
+    """
+    for forward_as_parent in forward_index:
+        parents: List[np.int64] = []
+        parents.append(forward_as_parent)
+        while len(parents) > 0:
+            parent = parents.pop()
+            # print(f"parent: {parent}")
+            for child in df[df['parent'] == parent].index:
+                child_fwdbwd_index = df.loc[child, 'fwdbwd_index']
+                if child_fwdbwd_index > 0:
+                    child_fwdbwd_num_kernels = df.loc[child_fwdbwd_index, 'num_kernels']
+                    if child_fwdbwd_num_kernels > 0:
+                        forward_children_with_bwd_id[forward_as_parent].append(child_fwdbwd_index)
+                child_type = df.loc[child, 's_cat']
+                if child_type != 'kernel':
+                    parents.append(child)
+    
+    backward_info: Dict[np.int64, np.float64] = defaultdict(np.float64)
+    for forward_as_parent, bwd_children_indices in forward_children_with_bwd_id.items():
+        bwd_children = df[df['index'].isin(bwd_children_indices)]
+        first_kernel_start = bwd_children['first_kernel_start'].min()
+        last_kernel_end = bwd_children['last_kernel_end'].max()
+        backward_info[forward_as_parent] = (last_kernel_end - first_kernel_start)/1000.0
+    backward_stat_info = pd.DataFrame.from_dict(backward_info, orient='index', columns=['kernel_dur_sum'])
+    return backward_stat_info
+
+print("Get the info of")
+forward_step_name = "megatron/core/pipeline_parallel/schedules.py(173): forward_step"
+forward_step_sym_id = t.symbol_table.get_sym_id_map().get(forward_step_name)
+bwd_ids = get_backward_duration(cg.trace_data.traces[0], forward_step_sym_id)
+print(f'bwd_ids: {bwd_ids}')
+exit(0)
+
+forward_step_info = cg.trace_data.traces[0][cg.trace_data.traces[0]['s_name']==forward_step_name]
+
 print(f"All kernels duration sum: {MLASelfAttention['kernel_dur_sum'].values}")
 print(f"The total number of kernels executed: {MLASelfAttention['num_kernels'].values}")
 print(f"The start time of first kernel executed: {MLASelfAttention['first_kernel_start'].values}")

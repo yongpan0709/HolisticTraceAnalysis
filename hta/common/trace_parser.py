@@ -253,12 +253,15 @@ def _compress_df(
     cfg = cfg or ParserConfig.get_default_cfg()
 
     # drop rows with null values
-    df.dropna(axis=0, subset=["dur", "cat"], inplace=True)
+    df.dropna(axis=0, subset=["cat"], inplace=True)
     df.drop(df[df["cat"] == "Trace"].index, inplace=True)
 
-    # drop columns
-    columns_to_drop = {"ph", "id", "bp", "s"}.intersection(set(df.columns))
-    df.drop(list(columns_to_drop), axis=1, inplace=True)
+    """
+      Todo: for keeping the fwdbwd info, do not drop columns here
+      move these logic to add_fwd_bwd_links func
+    """
+    # columns_to_drop = {"ph", "id", "bp", "s"}.intersection(set(df.columns))
+    # df.drop(list(columns_to_drop), axis=1, inplace=True)
     columns = set(df.columns)
 
     # performance counters appear as args

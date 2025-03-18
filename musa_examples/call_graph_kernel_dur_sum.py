@@ -8,8 +8,14 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 
+def set_pandas_display_options():
+    pd.set_option("display.max_columns", None)
+    pd.set_option("display.max_colwidth", None)
+    pd.set_option("display.width", None)
+    pd.set_option("display.float_format", "{:.2f}".format)
+
 base_dir = "../"
-trace_dir = str(Path(base_dir).joinpath("ds"))
+trace_dir = str(Path(base_dir).joinpath("ds-count-32"))
 cfg = ParserConfig.get_default_cfg()
 # config for extracting shape info
 cfg.add_args(ParserConfig.ARGS_INPUT_SHAPE)
@@ -19,6 +25,7 @@ t.parse_traces()
 # transform name and cat columns to s_name and s_cat
 # name and cat are kernel id
 t.decode_symbol_ids(use_shorten_name=False)
+set_pandas_display_options()
 cg = CallGraph(t, ranks=[0])
 
 def get_backward_duration(df, forward_sym_id): 
@@ -52,14 +59,73 @@ def get_backward_duration(df, forward_sym_id):
     backward_stat_info = pd.DataFrame.from_dict(backward_info, orient='index', columns=['kernel_dur_sum'])
     return backward_stat_info
 
-print("Get the info of")
-forward_step_name = "megatron/core/pipeline_parallel/schedules.py(173): forward_step"
-forward_step_sym_id = t.symbol_table.get_sym_id_map().get(forward_step_name)
-bwd_ids = get_backward_duration(cg.trace_data.traces[0], forward_step_sym_id)
-print(f'bwd_ids: {bwd_ids}')
-exit(0)
-
+# forward step calculations
 forward_step_info = cg.trace_data.traces[0][cg.trace_data.traces[0]['s_name']==forward_step_name]
+expect_func_names = ["pretrain_deepseekv2.py(139): get_batch",
+                    "nn.Module: LanguageModelEmbedding_0",
+                    "nn.Module: TransformerLayer_0",
+                    "nn.Module: TransformerLayer_1",
+                    "nn.Module: RMSNorm_1",
+                    "nn.Module: MLASelfAttention_1",
+                    "megatron/core/fusions/fused_bias_dropout.py(42): _bias_dropout_add",
+                    "nn.Module: RMSNorm_2",
+                    "nn.Module: MoELayer_0",
+                    "nn.Module: TopKRouter_0",
+                    "megatron/core/transformer/moe/token_dispatcher.py(473): token_permutation",
+                    "nn.Module: TEGroupedMLP_0",
+                    "megatron/core/transformer/moe/token_dispatcher.py(565): token_unpermutation",
+                    "nn.Module: SharedExpertMLP_0",
+                    "megatron/core/fusions/fused_bias_dropout.py(42): _bias_dropout_add",
+                    "nn.Module: ColumnParallelLinear_0",
+                    "megatron/core/models/common/language_module/language_module.py(66): compute_language_model_loss",
+                    "megatron/core/distributed/finalize_model_grads.py(250): finalize_model_grads",
+                    "megatron/core/optimizer/optimizer.py(1040): step",
+                    "megatron/core/transformer/moe/token_dispatcher.py(341): preprocess",
+                    "megatron/core/transformer/moe/moe_utils.py(221): permute",
+                    "megatron/core/tensor_parallel/mappings.py(524): all_to_all",
+                    "megatron/core/transformer/moe/moe_utils.py(353): sort_chunks_by_idxs",
+                    "megatron/core/transformer/moe/moe_utils.py(282): unpermute"
+                    ]
+expect_funcs_info = cg.trace_data.traces[0][cg.trace_data.traces[0]['s_name'].isin(expect_func_names)]
+# expect_funcs_info['expect_func_dur'] = (expect_funcs_info['last_kernel_end'] - expect_funcs_info['first_kernel_start'])/1000
+expect_funcs_info['expect_func_dur'] = expect_funcs_info['kernel_span']/1000
+funcs_grouped = expect_funcs_info.groupby(['s_name'])
+# expect_funcs_grouped = expect_funcs_info.groupby(['s_name'])
+stat_info_funcs_grouped = pd.DataFrame()
+stat_info_funcs_grouped['mean'] = funcs_grouped['expect_func_dur'].mean()
+stat_info_funcs_grouped['q_25'] = funcs_grouped['expect_func_dur'].quantile(.25)
+stat_info_funcs_grouped['q_50'] = funcs_grouped['expect_func_dur'].quantile(.5)
+stat_info_funcs_grouped['q_75'] = funcs_grouped['expect_func_dur'].quantile(.75)
+stat_info_funcs_grouped['max'] = expect_funcs_info.groupby(['s_name'])['expect_func_dur'].max()
+stat_info_funcs_grouped['min'] = expect_funcs_info.groupby(['s_name'])['expect_func_dur'].min()
+stat_info_funcs_grouped['var'] = expect_funcs_info.groupby(['s_name'])['expect_func_dur'].var()
+stat_info_funcs_grouped['count'] = expect_funcs_info.groupby(['s_name'])['expect_func_dur'].count()
+print(stat_info_funcs_grouped)
+
+
+print("Get backward info")
+# forward_step_name = "megatron/core/pipeline_parallel/schedules.py(173): forward_step"
+# nn.Module: GPTModel_0  backward
+# forward_step_sym_id = t.symbol_table.get_sym_id_map().get(forward_step_name)
+# bwd_ids = get_backward_duration(cg.trace_data.traces[0], forward_step_sym_id)
+print(f'bwd_ids: {bwd_ids}')
+
+for forward_step_name in expect_func_names:
+    forward_step_sym_id = t.symbol_table.get_sym_id_map().get(forward_step_name)
+    bwd_ids = get_backward_duration(cg.trace_data.traces[0], forward_step_sym_id)
+    bwd_df = pd.DataFrame({'mean': bwd_ids['kernel_dur_sum'].mean(),
+                        'q_25': bwd_ids['kernel_dur_sum'].quantile(.25),
+                        'q_50': bwd_ids['kernel_dur_sum'].quantile(.5),
+                        'q_75': bwd_ids['kernel_dur_sum'].quantile(.75),
+                        'max': bwd_ids['kernel_dur_sum'].max(),
+                        'min': bwd_ids['kernel_dur_sum'].min(),
+                        'var': bwd_ids['kernel_dur_sum'].var(),
+                        'count': 0}, index=[forward_step_name + '-bwd'], columns=['mean', 'q_25', 'q_50', 'q_75', 'max', 'min', 'var', 'count'])
+    print(f'bwd_ids: {bwd_ids}')
+    stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, bwd_df], axis=0)
+
+print(stat_info_funcs_grouped)
+exit(0)
 
 print(f"All kernels duration sum: {MLASelfAttention['kernel_dur_sum'].values}")
 print(f"The total number of kernels executed: {MLASelfAttention['num_kernels'].values}")

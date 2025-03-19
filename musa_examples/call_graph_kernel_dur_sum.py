@@ -17,8 +17,8 @@ def set_pandas_display_options():
     pd.set_option("display.float_format", "{:.2f}".format)
 
 
-def get_backward_duration(df, forward_sym_id): 
-    forward_index  = df[df['name'] == forward_sym_id].index
+def get_backward_duration(df, forward_index): 
+    # forward_index  = df[df['name'] == forward_sym_id].index
     forward_children_with_bwd_id: Dict[np.int64, List[np.int64]] = defaultdict(list)
     """
     Todo: refact to void checking children and grand-children funcs
@@ -50,6 +50,7 @@ def get_backward_duration(df, forward_sym_id):
 
 def find_child_index_in_ancestor(df: pd.DataFrame, child_func_name: str, ancestors_index):
     parents = deque()
+    target_index = []
     for idx in ancestors_index:
         if (df.loc[idx, 's_cat'] != 'musa_runtime'):
             parents.append(idx)
@@ -57,15 +58,16 @@ def find_child_index_in_ancestor(df: pd.DataFrame, child_func_name: str, ancesto
     while len(parents)>0:
         ancestor_as_parent_index = parents.popleft()
         child_df = df[df['parent'] == ancestor_as_parent_index]
-        print(child_df[['parent', 's_cat', 's_name']])
+        # print(child_df[['parent', 's_cat', 's_name']])
         if (child_df['s_name'] == child_func_name).any():
-            print("matched: ", child_df[child_df['s_name'] == child_func_name].index)
-            return child_df[child_df['s_name'] == child_func_name].index
+            # print("matched: ", child_df[child_df['s_name'] == child_func_name].index)
+            for child_indx in child_df[child_df['s_name'] == child_func_name].index:
+                target_index.append(child_indx)
         else:
             for child_index in child_df.index:
                 if (df.loc[child_index, 's_cat'] != 'musa_runtime'):
                     parents.append(child_index)
-    return []
+    return target_index
 
 def get_forward_duration(df, forward_func_name, func_ancestors):
     func_to_filters = [*func_ancestors, forward_func_name]
@@ -77,7 +79,7 @@ def get_forward_duration(df, forward_func_name, func_ancestors):
             # print(f'i {i}, func_to_filters[i].split([0]: {func_to_filters[i].split("@")[0]}')
             # print(f'child name: {func_to_filters[i].split("@")[0]}, ancestors_index: {ancestors_index}')
             node_index = find_child_index_in_ancestor(df, func_to_filters[i].split('@')[0], node_index)
-            # print(f'forward_func_name -- ancestors_index:{node_index}')
+            print(f'forward_func_name -- node_index: \n{node_index}')
             # return node_index
     else:
         node_index = df[df['s_name'] == func_to_filters[0].split('@')[0]].index
@@ -194,25 +196,36 @@ if __name__ == "__main__":
     t.decode_symbol_ids(use_shorten_name=False)
     set_pandas_display_options()
     cg = CallGraph(t, ranks=[0])
-    # ('megatron/core/tensor_parallel/mappings.py(524): all_to_all@0', ['megatron/core/pipeline_parallel/schedules.py(173): forward_step@0', 'nn.Module: TransformerLayer_1@0', 'nn.Module: MoELayer_0@0', 'megatron/core/transformer/moe/token_dispatcher.py(473): token_permutation@0']), 
-    forward_func_name, func_ancestors = ('megatron/core/tensor_parallel/mappings.py(528): all_to_all@0', ['megatron/core/pipeline_parallel/schedules.py(173): forward_step@0', 'nn.Module: TransformerLayer_1@0', 'nn.Module: MoELayer_0@0', 'megatron/core/transformer/moe/token_dispatcher.py(473): token_permutation@0'])
-    # forward_func_name, func_ancestors = ('nn.Module: TransformerLayer_1@0', ["megatron/core/transformer/transformer_block.py(314): custom_forward@0"])
     df = cg.trace_data.traces[0]
     func_name = extract_func_name_from_template(output_template)
+    stat_info_funcs_grouped = pd.DataFrame()
     for forward_func_name, func_ancestors in func_name:
         func_to_filters = [func_ancestors[:], forward_func_name]
         fwd_df = get_forward_duration(df, forward_func_name, func_ancestors)
-        print(f'forward_func_name: {forward_func_name}, df: {fwd_df}')
-    # forward_func_name, func_ancestors = ('megatron/core/pipeline_parallel/schedules.py(173): forward_step@0', [])
+        # print(f"forward_func_name: {forward_func_name}, df:\n {fwd_df[['s_name', 'kernel_span', 'first_kernel_start', 'last_kernel_end']]}")
+        fwd_df['kernel_span'] = fwd_df['kernel_span']/1000.0
+        fwd_dur = pd.DataFrame({'mean': fwd_df['kernel_span'].mean(),
+                            'q_25': fwd_df['kernel_span'].quantile(.25),
+                            'q_50': fwd_df['kernel_span'].quantile(.5),
+                            'q_75': fwd_df['kernel_span'].quantile(.75),
+                            'max': fwd_df['kernel_span'].max(),
+                            'min': fwd_df['kernel_span'].min(),
+                            'var': fwd_df['kernel_span'].var(),
+                            'count': 0}, index=[forward_func_name], columns=['mean', 'q_25', 'q_50', 'q_75', 'max', 'min', 'var', 'count'])
+        bwd_ids = get_backward_duration(df, fwd_df.index)
+        bwd_dur = pd.DataFrame({'mean': bwd_ids['kernel_dur_sum'].mean(),
+                        'q_25': bwd_ids['kernel_dur_sum'].quantile(.25),
+                        'q_50': bwd_ids['kernel_dur_sum'].quantile(.5),
+                        'q_75': bwd_ids['kernel_dur_sum'].quantile(.75),
+                        'max': bwd_ids['kernel_dur_sum'].max(),
+                        'min': bwd_ids['kernel_dur_sum'].min(),
+                        'var': bwd_ids['kernel_dur_sum'].var(),
+                        'count': 0}, index=[forward_func_name + '-bwd'], columns=['mean', 'q_25', 'q_50', 'q_75', 'max', 'min', 'var', 'count'])
+        stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, fwd_dur, bwd_dur], axis=0)
+    
+    print(f'stat_info_funcs_grouped: \n{stat_info_funcs_grouped}')
     # for forward_step_name in expect_func_names:
     # bwd_ids = get_backward_duration(cg.trace_data.traces[0], forward_step_sym_id)
-    # bwd_df = pd.DataFrame({'mean': bwd_ids['kernel_dur_sum'].mean(),
-    #                     'q_25': bwd_ids['kernel_dur_sum'].quantile(.25),
-    #                     'q_50': bwd_ids['kernel_dur_sum'].quantile(.5),
-    #                     'q_75': bwd_ids['kernel_dur_sum'].quantile(.75),
-    #                     'max': bwd_ids['kernel_dur_sum'].max(),
-    #                     'min': bwd_ids['kernel_dur_sum'].min(),
-    #                     'var': bwd_ids['kernel_dur_sum'].var(),
-    #                     'count': 0}, index=[forward_step_name + '-bwd'], columns=['mean', 'q_25', 'q_50', 'q_75', 'max', 'min', 'var', 'count'])
+   
 #     print(f'bwd_ids: {bwd_ids}')
 #     stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, bwd_df], axis=0)

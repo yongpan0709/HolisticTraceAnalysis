@@ -1,10 +1,16 @@
 from collections import defaultdict
-from typing import Dict, List
+from typing import Dict, List,Set
 import copy
 
-output_template_to_file = """
-megatron/core/pipeline_parallel/schedules.py(173): forward_step
-    pretrain_deepseekv2.py(139): get_batch
+DUP_LABEL = "@dup@"
+SHAPEUP_LABEL = "shape@up"
+SHAPEDOWN_LABEL = "shape@down"
+SHAPE_LABEL = [SHAPEUP_LABEL, SHAPEDOWN_LABEL]
+ANNOTATE_LABEL = [DUP_LABEL, SHAPEUP_LABEL, SHAPEDOWN_LABEL]
+
+output_template_to_file = r"""
+pretrain_deepseekv2.py\(\d+\): forward_step
+    pretrain_deepseekv2.py\(\d+\): get_batch
     nn.Module: LanguageModelEmbedding_0
 
     dense: 
@@ -13,77 +19,43 @@ megatron/core/pipeline_parallel/schedules.py(173): forward_step
     moe:
     nn.Module: TransformerLayer_1
         nn.Module: RMSNorm_1
-        nn.Module: MLASelfAttention_1
-        megatron/core/fusions/fused_bias_dropout.py(42): _bias_dropout_add
+        nn.Module: MLASelfAttentixon_1
+            aten::scaled_dot_product_attention
+        megatron/core/fusions/fused_bias_dropout.py\(\d+\): _bias_dropout_add
         nn.Module: RMSNorm_2
         nn.Module: MoELayer_0
             nn.Module: TopKRouter_0
-            megatron/core/transformer/moe/token_dispatcher.py(473): token_permutation
-                megatron/core/transformer/moe/token_dispatcher.py(341): preprocess
-                megatron/core/transformer/moe/moe_utils.py(221): permute
-                megatron/core/tensor_parallel/mappings.py(524): all_to_all
-                megatron/core/transformer/moe/moe_utils.py(353): sort_chunks_by_idxs
+                megatron/core/transformer/moe/router.py\(\d+\): gating
+                megatron/core/transformer/moe/router.py\(\d+\): routing
+                    musa_patch/moe_utils.py\(\d+\): topk_softmax_with_capacity
+                        megatron/core/transformer/moe/moe_utils.py\(\d+\): group_limited_topk
+                    <built-in method softmax of type object at 0x\w+>
+                    megatron/core/transformer/moe/router.py\(\d+\): apply_load_balancing_loss
+            megatron/core/transformer/moe/token_dispatcher.py\(\d+\): token_permutation
+                megatron/core/transformer/moe/token_dispatcher.py\(\d+\): preprocess
+                megatron/core/transformer/moe/moe_utils.py\(\d+\): permute
+                megatron/core/tensor_parallel/mappings.py\(\d+\): all_to_all @dup@ shape@down
+                megatron/core/transformer/moe/moe_utils.py\(\d+\): sort_chunks_by_idxs @dup@
             nn.Module: TEGroupedMLP_0
                 nn.Module: TEColumnParallelGroupedLinear_0
-                    <built-in method fused_multi_quantize of PyCapsule object at 0x7f2f84f5a8b0>
-                    transformer_engine/pytorch/cpp_extensions/gemm.py(147): general_grouped_gemm
-                megatron/core/fusions/fused_bias_swiglu.py(76): bias_swiglu_impl
+                    <built-in method fused_multi_quantize of PyCapsule object at 0x\w+> @dup@
+                    transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@ shape@up
+                megatron/core/fusions/fused_bias_swiglu.py\(\d+\): bias_swiglu_impl
                 nn.Module: TERowParallelGroupedLinear_0
-                    <built-in method fused_multi_quantize of PyCapsule object at 0x7f2f84f5a8b0>
-                    transformer_engine/pytorch/cpp_extensions/gemm.py(147): general_grouped_gemm
-            megatron/core/transformer/moe/token_dispatcher.py(565): token_unpermutation
-                megatron/core/transformer/moe/moe_utils.py(353): sort_chunks_by_idxs
-                megatron/core/tensor_parallel/mappings.py(524): all_to_all
-                megatron/core/transformer/moe/moe_utils.py(282): unpermute
+                    <built-in method fused_multi_quantize of PyCapsule object at 0x\w+> @dup@
+                    transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@ shape@up
+            megatron/core/transformer/moe/token_dispatcher.py\(\d+\): token_unpermutation
+                megatron/core/transformer/moe/moe_utils.py\(\d+\): sort_chunks_by_idxs @dup@
+                megatron/core/tensor_parallel/mappings.py\(\d+\): all_to_all @dup@ shape@down
+                megatron/core/transformer/moe/moe_utils.py\(\d+\): unpermute
             nn.Module: SharedExpertMLP_0
-        megatron/core/fusions/fused_bias_dropout.py(42): _bias_dropout_add
+        megatron/core/fusions/fused_bias_dropout.py\(\d+\): _bias_dropout_add
 
     nn.Module: RMSNorm_3
 
     loss:
     nn.Module: ColumnParallelLinear_0
-    megatron/core/models/common/language_module/language_module.py(66): compute_language_model_loss
-"""
-output_template_1 = """
-megatron/core/pipeline_parallel/schedules.py(173): forward_step
-pretrain_deepseekv2.py(139): get_batch
-nn.Module: LanguageModelEmbedding_0
-
-dense: 
-nn.Module: TransformerLayer_0
-
-moe:
-nn.Module: TransformerLayer_1
-nn.Module: RMSNorm_1
-nn.Module: MLASelfAttention_1
-megatron/core/fusions/fused_bias_dropout.py(42): _bias_dropout_add
-nn.Module: RMSNorm_2
-nn.Module: MoELayer_0
-    nn.Module: TopKRouter_0
-megatron/core/transformer/moe/token_dispatcher.py(473): token_permutation
-    megatron/core/transformer/moe/token_dispatcher.py(341): preprocess
-    megatron/core/transformer/moe/moe_utils.py(221): permute
-    megatron/core/tensor_parallel/mappings.py(524): all_to_all
-    megatron/core/transformer/moe/moe_utils.py(353): sort_chunks_by_idxs
-nn.Module: TEGroupedMLP_0
-nn.Module: TEColumnParallelGroupedLinear_0
-    <built-in method fused_multi_quantize of PyCapsule object at 0x7f2f84f5a8b0>
-    transformer_engine/pytorch/cpp_extensions/gemm.py(147): general_grouped_gemm
-    megatron/core/fusions/fused_bias_swiglu.py(76): bias_swiglu_impl
-nn.Module: TERowParallelGroupedLinear_0
-    <built-in method fused_multi_quantize of PyCapsule object at 0x7f2f84f5a8b0>
-    transformer_engine/pytorch/cpp_extensions/gemm.py(147): general_grouped_gemm
-megatron/core/transformer/moe/token_dispatcher.py(565): token_unpermutation
-    megatron/core/transformer/moe/moe_utils.py(353): sort_chunks_by_idxs
-    megatron/core/tensor_parallel/mappings.py(524): all_to_all
-    megatron/core/transformer/moe/moe_utils.py(282): unpermute
-nn.Module: SharedExpertMLP_0
-
-nn.Module: RMSNorm_3
-
-loss:
-nn.Module: ColumnParallelLinear_0
-megatron/core/models/common/language_module/language_module.py(66): compute_language_model_loss
+    megatron/core/models/common/language_module/language_module.py\(\d+\): compute_language_model_loss
 """
 # Function to count leading spaces or tabs
 def count_leading_whitespace(line):
@@ -101,6 +73,32 @@ def call_stack_with_ancestors_to_list(stack, call_stack_list, level=0):
         call_stack_list.append((entry['name'], entry['ancestors']))
         call_stack_with_ancestors_to_list(entry['children'], call_stack_list, level + 1)
 
+def extract_dup_or_shape_func_name_from_template(output_template: str) -> (Set[str], Dict[str, str]):
+    # Split the output_template by newlines and strip leading/trailing whitespace
+    lines = [line for line in output_template.splitlines() if line.strip() and line.strip() not in ['dense:', 'moe:', 'loss:'] ]
+
+    dup_func_name = set()
+    need_shape_func_name: Dict[str, str] = defaultdict(str)
+    for line in lines:
+        Has_DUP_LABEL = False
+        if DUP_LABEL in line:
+            line = line.replace(DUP_LABEL, '')
+            Has_DUP_LABEL = True
+
+        Has_SHAPE_LABEL = False
+        shape_direction = ''
+        for shape_annotate in SHAPE_LABEL:
+            if shape_annotate in line:
+                line = line.replace(shape_annotate, '')
+                Has_SHAPE_LABEL = True
+                shape_direction = shape_annotate
+
+        func_name = line.strip()
+        if Has_DUP_LABEL:
+            dup_func_name.add(func_name)
+        if Has_SHAPE_LABEL:
+            need_shape_func_name[func_name] = shape_direction
+    return dup_func_name, need_shape_func_name
 
 def extract_func_name_from_template(output_template: str) -> List[str]:
     # Split the output_template by newlines and strip leading/trailing whitespace
@@ -113,7 +111,9 @@ def extract_func_name_from_template(output_template: str) -> List[str]:
 
     for line in lines:
         indent_level = count_leading_whitespace(line)
-
+        for annotate in ANNOTATE_LABEL:
+            if annotate in line:
+                line = line.replace(annotate, '')
         func_name = line.strip()+'@'+ str(dup_func_name[line.strip()])
         dup_func_name[line.strip()] += 1
         entry = {'name': func_name, 'children': [], 'ancestors': []}
@@ -135,10 +135,13 @@ def extract_func_name_from_template(output_template: str) -> List[str]:
 
 # Function to print the call stack with ancestors
 def print_call_stack_with_ancestors(stack, level=0):
-    for forward_func_name, func_ancestors in func_name:
+    for forward_func_name, func_ancestors in stack:
         print('    ' * level + forward_func_name)
-        print('    ' * (level + 1) + 'Ancestors: ' + ' -> '.join(entry['ancestors']))
-        print_call_stack_with_ancestors(entry['children'], level + 1)
+        print('    ' * (level + 1) + 'Ancestors: ' + ' -> '.join(func_ancestors))
+        # print_call_stack_with_ancestors(entry['children'], level + 1)
 
 if __name__ == '__main__':
-    print(extract_func_name_from_template(output_template))
+    print(extract_func_name_from_template(output_template_to_file))
+    dup_func_name, need_shape_func_name = extract_dup_or_shape_func_name_from_template(output_template_to_file)
+    print(dup_func_name)
+    print(need_shape_func_name)

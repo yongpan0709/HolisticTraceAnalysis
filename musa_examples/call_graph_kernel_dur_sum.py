@@ -3,12 +3,13 @@ from hta.common.trace import Trace
 from hta.configs.config import logger
 from hta.configs.parser_config import  ParserConfig, AVAILABLE_ARGS
 from hta.common.trace_call_graph import CallGraph
+from hta.common.call_stack import CallStackIdentity
 from collections import defaultdict
 from typing import Dict, List, Set
 import numpy as np
 import pandas as pd
 from collections import deque
-from call_graph_template import extract_func_name_from_template, output_template_1
+from call_graph_template import extract_func_name_from_template, extract_dup_or_shape_func_name_from_template, output_template_to_file
 
 def set_pandas_display_options():
     pd.set_option("display.max_rows", None)
@@ -49,45 +50,37 @@ def get_backward_duration(df, forward_index):
     backward_stat_info = pd.DataFrame.from_dict(backward_info, orient='index', columns=['kernel_dur_sum'])
     return backward_stat_info
 
-def find_child_index_in_ancestor(df: pd.DataFrame, child_func_name: str, ancestors_index):
-    parents = deque()
-    target_index = []
-    for idx in ancestors_index:
-        if (df.loc[idx, 's_cat'] not in ['cpu_op', 'gpu_memcpy', 'gpu_memset', 'musa_driver', 'musa_runtime', 'user_annotation']):
-            parents.append(idx)
-
-    while len(parents)>0:
-        ancestor_as_parent_index = parents.popleft()
-        child_df = df[df['parent'] == ancestor_as_parent_index]
-        # print(child_df[['parent', 's_cat', 's_name']])
-        if (child_df['s_name'] == child_func_name).any():
-            # print("matched: ", child_df[child_df['s_name'] == child_func_name].index)
-            for child_indx in child_df[child_df['s_name'] == child_func_name].index:
-                target_index.append(child_indx)
-        else:
-            for child_index in child_df.index:
-                if (df.loc[child_index, 's_cat'] not in ['cpu_op', 'gpu_memcpy', 'gpu_memset', 'musa_driver', 'musa_runtime', 'user_annotation']):
-                    parents.append(child_index)
-    return target_index
-
-def get_forward_duration(df, func_to_filters, ancestors_index):
-    node_index: List[np.int64] = ancestors_index
-    if len(func_to_filters) > 1:
-        # ancestor_s_name = func_to_filters[0].split('@')[0]
-        node_index = ancestors_index
-        for i in range(1, len(func_to_filters)):
-            # print(f'i {i}, func_to_filters[i].split([0]: {func_to_filters[i].split("@")[0]}')
-            # print(f'child name: {func_to_filters[i].split("@")[0]}, ancestors_index: {ancestors_index}')
-            node_index = find_child_index_in_ancestor(df, func_to_filters[i].split('@')[0], node_index)
-            # print(f'forward_func_name -- node_index: \n{node_index}')
-            # return node_index
-    else:
-        node_index = df[df['s_name'] == func_to_filters[0].split('@')[0]].index
-        # print(f'in else ancestors_index:{node_index}')
-        # return node_index    
-    # print('in get foward duration', df[df['index'].isin(node_index)])
+def get_forward_duration_uniq(df, forward_func_name):
+    node_index = df[df['s_name'].str.match(pat=r"^"+forward_func_name+r"$")].index
     return df[df['index'].isin(node_index)]
 
+def get_forward_duration_dup(df, forward_func_name, func_ancestors, cg, func_mapping_node_index):
+    node_index: List[np.int64] = []
+    nearest_ancestor_index = func_mapping_node_index[func_ancestors[-1]]
+    for index, row in df[df['s_name'].str.match(pat=forward_func_name)].iterrows():
+        pid, tid = row['pid'], row['tid']
+        path_to_root = cg.rank_to_stacks[0][CallStackIdentity(0, pid, tid)].get_path_to_root(index)
+        if len(set(path_to_root).intersection(set(nearest_ancestor_index))) > 0:
+            node_index.append(index)
+    # print("dup node index: ", node_index)
+    return df[df['index'].isin(node_index)]
+
+def calculate_statistics(df: pd.DataFrame, func_name: str, calculate_col_name: str, fwd_bwd: str = 'fwd'):
+    if fwd_bwd == 'fwd':
+        df[calculate_col_name] = df[calculate_col_name]/1000.0
+    df_dur = pd.DataFrame({
+                        'mean': df[calculate_col_name].mean(),
+                        'q_25': df[calculate_col_name].quantile(.25),
+                        'q_50': df[calculate_col_name].quantile(.5),
+                        'q_75': df[calculate_col_name].quantile(.75),
+                        'max':  df[calculate_col_name].max(),
+                        'min':  df[calculate_col_name].min(),
+                        'var':  df[calculate_col_name].var(),
+                        'count': df[calculate_col_name].count()}, index=[func_name], columns=['mean', 'q_25', 'q_50', 'q_75', 'max', 'min', 'var', 'count'])
+    return df_dur
+
+# def get_forward_duration(df, forward_func_name, func_ancestors, dup_func_name, cg, func_mapping_node_index):
+#     for 
 #def print_call_stack_statistic_info(df, call_stack_template):
 
 # print(f"All kernels duration sum: {MLASelfAttention['kernel_dur_sum'].values}")
@@ -115,7 +108,7 @@ def get_forward_duration(df, func_to_filters, ancestors_index):
 
 if __name__ == "__main__":
     base_dir = "../"
-    trace_dir = str(Path(base_dir).joinpath("ds-0321"))
+    trace_dir = str(Path(base_dir).joinpath("ds-0405-0301"))
     cfg = ParserConfig.get_default_cfg()
     # config for extracting shape info
     cfg.add_args(ParserConfig.ARGS_INPUT_SHAPE)
@@ -128,50 +121,36 @@ if __name__ == "__main__":
     set_pandas_display_options()
     cg = CallGraph(t, ranks=[0])
     df = cg.trace_data.traces[0]
-    func_name = extract_func_name_from_template(output_template_1)
+    dup_func_name, need_shape_func_name = extract_dup_or_shape_func_name_from_template(output_template_to_file)
+    func_name = extract_func_name_from_template(output_template_to_file)
     stat_info_funcs_grouped = pd.DataFrame()
     func_mapping_node_index: Dict[str, List[np.float64]] = defaultdict(list)
     for forward_func_name, func_ancestors in func_name:
-        func_to_filters = [*func_ancestors, forward_func_name]
-        calculated_idx = 0
-        for i in range(len(func_to_filters)-1, -1, -1):
-            if func_to_filters[i] not in func_mapping_node_index:
-                continue
-            else:
-                calculated_idx = i
-        
-        # print(f'forward_func_name: {forward_func_name}, calculated_idx: {calculated_idx}')
-        # print(f'func_ancestors: {func_to_filters[calculated_idx:]}, mapping reused: {func_mapping_node_index[func_to_filters[calculated_idx]]}')
-        fwd_df = get_forward_duration(df, func_to_filters[calculated_idx:], func_mapping_node_index[func_to_filters[calculated_idx]])
+        if forward_func_name.split('@')[0] in dup_func_name:
+            continue
+        fwd_df = get_forward_duration_uniq(df, forward_func_name.split('@')[0])
+        fwd_dur = calculate_statistics(fwd_df, forward_func_name, 'kernel_span')
+        func_mapping_node_index[forward_func_name] = fwd_df.index
+        bwd_df = get_backward_duration(df, fwd_df.index)
+        bwd_dur = calculate_statistics(bwd_df, forward_func_name+'-bwd', 'kernel_dur_sum', 'bwd')
+        stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, fwd_dur, bwd_dur], axis=0)
+    for forward_func_name, func_ancestors in func_name:
+        # fwd_df = get_forward_duration(df, func_to_filters[calculated_idx:], func_mapping_node_index[func_to_filters[calculated_idx]])
+        if forward_func_name.split('@')[0] not in dup_func_name:
+            continue
+        # print(f'forward_func_name: {forward_func_name}, func_ancestors: {func_ancestors}')
+        fwd_df = get_forward_duration_dup(df, forward_func_name.split('@')[0], func_ancestors, cg, func_mapping_node_index)
         # print(f"forward_func_name: {forward_func_name}, df:\n {fwd_df[['s_name', 'kernel_span', 'first_kernel_start', 'last_kernel_end']]}")
         # print(f'fwd_df: {fwd_df}')
-        fwd_df['kernel_span'] = fwd_df['kernel_span']/1000.0
-        fwd_dur = pd.DataFrame({
-                            'mean': fwd_df['kernel_span'].mean(),
-                            'q_25': fwd_df['kernel_span'].quantile(.25),
-                            'q_50': fwd_df['kernel_span'].quantile(.5),
-                            'q_75': fwd_df['kernel_span'].quantile(.75),
-                            'max': fwd_df['kernel_span'].max(),
-                            'min': fwd_df['kernel_span'].min(),
-                            'var': fwd_df['kernel_span'].var(),
-                            'count': fwd_df['kernel_span'].count()}, index=[forward_func_name], columns=['mean', 'q_25', 'q_50', 'q_75', 'max', 'min', 'var', 'count'])
+        fwd_dur = calculate_statistics(fwd_df, forward_func_name, 'kernel_span')
         # print(fwd_dur)
         func_mapping_node_index[forward_func_name] = fwd_df.index
-        bwd_ids = get_backward_duration(df, fwd_df.index)
-        bwd_dur = pd.DataFrame({
-                        'mean': bwd_ids['kernel_dur_sum'].mean(),
-                        'q_25': bwd_ids['kernel_dur_sum'].quantile(.25),
-                        'q_50': bwd_ids['kernel_dur_sum'].quantile(.5),
-                        'q_75': bwd_ids['kernel_dur_sum'].quantile(.75),
-                        'max': bwd_ids['kernel_dur_sum'].max(),
-                        'min': bwd_ids['kernel_dur_sum'].min(),
-                        'var': bwd_ids['kernel_dur_sum'].var(),
-                        'count': 0}, index=[forward_func_name+'-bwd'],columns=['mean', 'q_25', 'q_50', 'q_75', 'max', 'min', 'var', 'count'])
+        bwd_df = get_backward_duration(df, fwd_df.index)
+        bwd_dur = calculate_statistics(bwd_df, forward_func_name+'-bwd', 'kernel_dur_sum', 'bwd')
+        # print(bwd_dur)
         stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, fwd_dur, bwd_dur], axis=0)
-    
+
     (root_func_name, _) = func_name[0]
-    # print(f'root_func_name: {root_func_name}')
-    # print(stat_info_funcs_grouped[stat_info_funcs_grouped.index == root_func_name]['mean'])
     fwd_total_dur_mean = stat_info_funcs_grouped[stat_info_funcs_grouped.index == root_func_name]['mean'].values[0]
     bwd_total_dur_mean = stat_info_funcs_grouped[stat_info_funcs_grouped.index == root_func_name+'-bwd']['mean'].values[0]
     stat_info_funcs_grouped['mean_percent'] = 0.0
@@ -183,11 +162,11 @@ if __name__ == "__main__":
             return row['mean']/fwd_total_dur_mean
     stat_info_funcs_grouped['mean_percent'] = stat_info_funcs_grouped.apply(lambda row: cal_dur_percent(row, fwd_total_dur_mean, bwd_total_dur_mean), axis=1)
 
-    # print_call_stack_statistic_info(stat_info_funcs_grouped, output_template_to_file)
     stat_info_funcs_grouped.to_csv('profile-0320-update.csv')
-    print(f'stat_info_funcs_grouped: \n{stat_info_funcs_grouped}')
-    # for forward_step_name in expect_func_names:
-    # bwd_ids = get_backward_duration(cg.trace_data.traces[0], forward_step_sym_id)
-   
-#     print(f'bwd_ids: {bwd_ids}')
-#     stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, bwd_df], axis=0)
+    # print(f'stat_info_funcs_grouped: \n{stat_info_funcs_grouped}')
+    for forward_func_name, func_ancestors in func_name:
+        print(f'{"    " * len(func_ancestors)}{forward_func_name}')
+        forward_func_name
+        print(f'{"    " * (len(func_ancestors)+1)} fwd: mean_percent: {stat_info_funcs_grouped.loc[forward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[forward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[forward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[forward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[forward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[forward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[forward_func_name,"min"]:.2f}')
+        backward_func_name = forward_func_name + '-bwd'
+        print(f'{"    " * (len(func_ancestors)+1)} bwd: mean_percent: {stat_info_funcs_grouped.loc[backward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[backward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[backward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[backward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[backward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[backward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[backward_func_name,"min"]:.2f}')

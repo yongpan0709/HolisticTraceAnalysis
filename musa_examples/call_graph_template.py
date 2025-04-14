@@ -3,10 +3,15 @@ from typing import Dict, List,Set
 import copy
 
 DUP_LABEL = "@dup@"
-SHAPEUP_LABEL = "shape@up"
+SHAPEUP_LABEL = "@shape@"
 SHAPEDOWN_LABEL = "shape@down"
 SHAPE_LABEL = [SHAPEUP_LABEL, SHAPEDOWN_LABEL]
 ANNOTATE_LABEL = [DUP_LABEL, SHAPEUP_LABEL, SHAPEDOWN_LABEL]
+
+SHAPE_POSITION = {
+    '_AllToAll': 1,
+    '_GroupedLinear': 2
+}
 
 output_template_to_file = r"""
 pretrain_deepseekv2.py\(\d+\): forward_step
@@ -19,7 +24,7 @@ pretrain_deepseekv2.py\(\d+\): forward_step
     moe:
     nn.Module: TransformerLayer_1
         nn.Module: RMSNorm_1
-        nn.Module: MLASelfAttentixon_1
+        nn.Module: MLASelfAttention_1
             aten::scaled_dot_product_attention
         megatron/core/fusions/fused_bias_dropout.py\(\d+\): _bias_dropout_add
         nn.Module: RMSNorm_2
@@ -34,19 +39,23 @@ pretrain_deepseekv2.py\(\d+\): forward_step
             megatron/core/transformer/moe/token_dispatcher.py\(\d+\): token_permutation
                 megatron/core/transformer/moe/token_dispatcher.py\(\d+\): preprocess
                 megatron/core/transformer/moe/moe_utils.py\(\d+\): permute
-                megatron/core/tensor_parallel/mappings.py\(\d+\): all_to_all @dup@ shape@down
+                megatron/core/tensor_parallel/mappings.py\(\d+\): all_to_all @dup@
+                    _AllToAll @dup@ @shape@
                 megatron/core/transformer/moe/moe_utils.py\(\d+\): sort_chunks_by_idxs @dup@
             nn.Module: TEGroupedMLP_0
                 nn.Module: TEColumnParallelGroupedLinear_0
-                    <built-in method fused_multi_quantize of PyCapsule object at 0x\w+> @dup@
-                    transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@ shape@up
+                    _GroupedLinear @dup@ @shape@
+                        <built-in method fused_multi_quantize of PyCapsule object at 0x\w+> @dup@
+                        transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@
                 megatron/core/fusions/fused_bias_swiglu.py\(\d+\): bias_swiglu_impl
                 nn.Module: TERowParallelGroupedLinear_0
-                    <built-in method fused_multi_quantize of PyCapsule object at 0x\w+> @dup@
-                    transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@ shape@up
+                    _GroupedLinear @dup@ @shape@
+                        <built-in method fused_multi_quantize of PyCapsule object at 0x\w+> @dup@
+                        transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@
             megatron/core/transformer/moe/token_dispatcher.py\(\d+\): token_unpermutation
                 megatron/core/transformer/moe/moe_utils.py\(\d+\): sort_chunks_by_idxs @dup@
-                megatron/core/tensor_parallel/mappings.py\(\d+\): all_to_all @dup@ shape@down
+                megatron/core/tensor_parallel/mappings.py\(\d+\): all_to_all @dup@
+                    _AllToAll @dup@ @shape@
                 megatron/core/transformer/moe/moe_utils.py\(\d+\): unpermute
             nn.Module: SharedExpertMLP_0
         megatron/core/fusions/fused_bias_dropout.py\(\d+\): _bias_dropout_add

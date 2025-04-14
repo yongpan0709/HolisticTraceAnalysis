@@ -9,7 +9,7 @@ from typing import Dict, List, Set
 import numpy as np
 import pandas as pd
 from collections import deque
-from call_graph_template import extract_func_name_from_template, extract_dup_or_shape_func_name_from_template, output_template_to_file
+from call_graph_template import extract_func_name_from_template, extract_dup_or_shape_func_name_from_template, output_template_to_file, SHAPE_POSITION
 
 def set_pandas_display_options():
     pd.set_option("display.max_rows", None)
@@ -57,7 +57,7 @@ def get_forward_duration_uniq(df, forward_func_name):
 def get_forward_duration_dup(df, forward_func_name, func_ancestors, cg, func_mapping_node_index):
     node_index: List[np.int64] = []
     nearest_ancestor_index = func_mapping_node_index[func_ancestors[-1]]
-    for index, row in df[df['s_name'].str.match(pat=forward_func_name)].iterrows():
+    for index, row in df[df['s_name'].str.match(pat=r"^"+forward_func_name+r"$")].iterrows():
         pid, tid = row['pid'], row['tid']
         path_to_root = cg.rank_to_stacks[0][CallStackIdentity(0, pid, tid)].get_path_to_root(index)
         if len(set(path_to_root).intersection(set(nearest_ancestor_index))) > 0:
@@ -79,6 +79,17 @@ def calculate_statistics(df: pd.DataFrame, func_name: str, calculate_col_name: s
                         'count': df[calculate_col_name].count()}, index=[func_name], columns=['mean', 'q_25', 'q_50', 'q_75', 'max', 'min', 'var', 'count'])
     return df_dur
 
+def extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name):
+    shape_info: Dict[str, Dict[str, pd.Series]] = defaultdict(lambda: defaultdict(pd.Series))
+    for forward_func_name, _ in func_name:
+        if forward_func_name.split('@')[0] in need_shape_func_name:
+            func_index = func_mapping_node_index[forward_func_name]
+            shape_array = []
+            for index, row in df[df.index.isin(func_index)].iterrows(): 
+                shape_array.append(row['input_dims'][0][0])
+            shape_info[forward_func_name]['data'] = pd.Series(shape_array)
+            shape_info[forward_func_name]['example'] = df.loc[func_index[0], 'input_dims']
+    return shape_info
 # def get_forward_duration(df, forward_func_name, func_ancestors, dup_func_name, cg, func_mapping_node_index):
 #     for 
 #def print_call_stack_statistic_info(df, call_stack_template):
@@ -108,7 +119,7 @@ def calculate_statistics(df: pd.DataFrame, func_name: str, calculate_col_name: s
 
 if __name__ == "__main__":
     base_dir = "../"
-    trace_dir = str(Path(base_dir).joinpath("ds-0405-0301"))
+    trace_dir = str(Path(base_dir).joinpath("ds-0405"))
     cfg = ParserConfig.get_default_cfg()
     # config for extracting shape info
     cfg.add_args(ParserConfig.ARGS_INPUT_SHAPE)
@@ -125,31 +136,34 @@ if __name__ == "__main__":
     func_name = extract_func_name_from_template(output_template_to_file)
     stat_info_funcs_grouped = pd.DataFrame()
     func_mapping_node_index: Dict[str, List[np.float64]] = defaultdict(list)
-    for forward_func_name, func_ancestors in func_name:
-        if forward_func_name.split('@')[0] in dup_func_name:
-            continue
-        fwd_df = get_forward_duration_uniq(df, forward_func_name.split('@')[0])
-        fwd_dur = calculate_statistics(fwd_df, forward_func_name, 'kernel_span')
-        func_mapping_node_index[forward_func_name] = fwd_df.index
-        bwd_df = get_backward_duration(df, fwd_df.index)
-        bwd_dur = calculate_statistics(bwd_df, forward_func_name+'-bwd', 'kernel_dur_sum', 'bwd')
-        stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, fwd_dur, bwd_dur], axis=0)
-    for forward_func_name, func_ancestors in func_name:
-        # fwd_df = get_forward_duration(df, func_to_filters[calculated_idx:], func_mapping_node_index[func_to_filters[calculated_idx]])
-        if forward_func_name.split('@')[0] not in dup_func_name:
-            continue
-        # print(f'forward_func_name: {forward_func_name}, func_ancestors: {func_ancestors}')
-        fwd_df = get_forward_duration_dup(df, forward_func_name.split('@')[0], func_ancestors, cg, func_mapping_node_index)
-        # print(f"forward_func_name: {forward_func_name}, df:\n {fwd_df[['s_name', 'kernel_span', 'first_kernel_start', 'last_kernel_end']]}")
-        # print(f'fwd_df: {fwd_df}')
-        fwd_dur = calculate_statistics(fwd_df, forward_func_name, 'kernel_span')
-        # print(fwd_dur)
-        func_mapping_node_index[forward_func_name] = fwd_df.index
-        bwd_df = get_backward_duration(df, fwd_df.index)
-        bwd_dur = calculate_statistics(bwd_df, forward_func_name+'-bwd', 'kernel_dur_sum', 'bwd')
-        # print(bwd_dur)
-        stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, fwd_dur, bwd_dur], axis=0)
 
+    for forward_func_name, func_ancestors in func_name:
+        if forward_func_name.split('@')[0] not in dup_func_name:
+            fwd_df = get_forward_duration_uniq(df, forward_func_name.split('@')[0])
+        else:
+            fwd_df = get_forward_duration_dup(df, forward_func_name.split('@')[0], func_ancestors, cg, func_mapping_node_index)
+        fwd_dur = calculate_statistics(fwd_df, forward_func_name, 'kernel_span')
+        func_mapping_node_index[forward_func_name] = fwd_df.index
+        bwd_df = get_backward_duration(df, fwd_df.index)
+        bwd_dur = calculate_statistics(bwd_df, forward_func_name+'-bwd', 'kernel_dur_sum', 'bwd')
+        stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, fwd_dur, bwd_dur], axis=0)
+    # for forward_func_name, func_ancestors in func_name:
+    #     # fwd_df = get_forward_duration(df, func_to_filters[calculated_idx:], func_mapping_node_index[func_to_filters[calculated_idx]])
+    #     if forward_func_name.split('@')[0] not in dup_func_name:
+    #         continue
+    #     # print(f'forward_func_name: {forward_func_name}, func_ancestors: {func_ancestors}')
+    #     fwd_df = get_forward_duration_dup(df, forward_func_name.split('@')[0], func_ancestors, cg, func_mapping_node_index)
+    #     # print(f"forward_func_name: {forward_func_name}, df:\n {fwd_df[['s_name', 'kernel_span', 'first_kernel_start', 'last_kernel_end']]}")
+    #     # print(f'fwd_df: {fwd_df}')
+        
+    #     # print(fwd_dur)
+    #     func_mapping_node_index[forward_func_name] = fwd_df.index
+        # bwd_df = get_backward_duration(df, fwd_df.index)
+        # bwd_dur = calculate_statistics(bwd_df, forward_func_name+'-bwd', 'kernel_dur_sum', 'bwd')
+        # print(bwd_dur)
+        # stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, fwd_dur, bwd_dur], axis=0)
+    shape_info = extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name)
+    # print(shape_info)
     (root_func_name, _) = func_name[0]
     fwd_total_dur_mean = stat_info_funcs_grouped[stat_info_funcs_grouped.index == root_func_name]['mean'].values[0]
     bwd_total_dur_mean = stat_info_funcs_grouped[stat_info_funcs_grouped.index == root_func_name+'-bwd']['mean'].values[0]
@@ -162,11 +176,17 @@ if __name__ == "__main__":
             return row['mean']/fwd_total_dur_mean
     stat_info_funcs_grouped['mean_percent'] = stat_info_funcs_grouped.apply(lambda row: cal_dur_percent(row, fwd_total_dur_mean, bwd_total_dur_mean), axis=1)
 
-    stat_info_funcs_grouped.to_csv('profile-0320-update.csv')
+    stat_info_funcs_grouped.to_csv('profile-0413-update.csv')
     # print(f'stat_info_funcs_grouped: \n{stat_info_funcs_grouped}')
+    shape_info = extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name)
     for forward_func_name, func_ancestors in func_name:
-        print(f'{"    " * len(func_ancestors)}{forward_func_name}')
-        forward_func_name
+        if forward_func_name.split('@')[0] in need_shape_func_name:
+            shape_dim = shape_info[forward_func_name]['example'][:SHAPE_POSITION[forward_func_name.split('@')[0]]]
+            shape_dim[0][0] = int(shape_info[forward_func_name]['data'].mean())
+            print(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}')
+        else:
+            print(f'{"    " * len(func_ancestors)}{forward_func_name}')
+        # forward_func_name
         print(f'{"    " * (len(func_ancestors)+1)} fwd: mean_percent: {stat_info_funcs_grouped.loc[forward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[forward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[forward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[forward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[forward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[forward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[forward_func_name,"min"]:.2f}')
         backward_func_name = forward_func_name + '-bwd'
         print(f'{"    " * (len(func_ancestors)+1)} bwd: mean_percent: {stat_info_funcs_grouped.loc[backward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[backward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[backward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[backward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[backward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[backward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[backward_func_name,"min"]:.2f}')

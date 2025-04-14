@@ -90,32 +90,6 @@ def extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name):
             shape_info[forward_func_name]['data'] = pd.Series(shape_array)
             shape_info[forward_func_name]['example'] = df.loc[func_index[0], 'input_dims']
     return shape_info
-# def get_forward_duration(df, forward_func_name, func_ancestors, dup_func_name, cg, func_mapping_node_index):
-#     for 
-#def print_call_stack_statistic_info(df, call_stack_template):
-
-# print(f"All kernels duration sum: {MLASelfAttention['kernel_dur_sum'].values}")
-# print(f"The total number of kernels executed: {MLASelfAttention['num_kernels'].values}")
-# print(f"The start time of first kernel executed: {MLASelfAttention['first_kernel_start'].values}")
-# print(f"The end time of last kernel executed: {MLASelfAttention['last_kernel_end'].values}")
-
-# expect_kernel_name = "musa_asm_bf16bf16bf16bf16gemm_nt_tce_768_256x384B128_squad_level_epilogue"
-# print(f"\n\nGet the shape info of kernel name[{expect_kernel_name}]")
-# df = cg.trace_data.traces[0]
-
-# index_kernel_in_df = df[df['s_name'] == expect_kernel_name].index
-# first_index = index_kernel_in_df.values[0]
-# # print(first_index)
-# check_shape_of_index  = first_index
-# while True:
-#     shape = df.loc[check_shape_of_index,'input_dims']
-#     if shape == '-1':
-#         check_shape_of_index = df.loc[check_shape_of_index,'parent']
-#         print(f'parent index: {check_shape_of_index}')
-#         # print()
-#     else:
-#         print(f'The shape info: {shape}')
-#         break
 
 if __name__ == "__main__":
     base_dir = "../"
@@ -147,21 +121,7 @@ if __name__ == "__main__":
         bwd_df = get_backward_duration(df, fwd_df.index)
         bwd_dur = calculate_statistics(bwd_df, forward_func_name+'-bwd', 'kernel_dur_sum', 'bwd')
         stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, fwd_dur, bwd_dur], axis=0)
-    # for forward_func_name, func_ancestors in func_name:
-    #     # fwd_df = get_forward_duration(df, func_to_filters[calculated_idx:], func_mapping_node_index[func_to_filters[calculated_idx]])
-    #     if forward_func_name.split('@')[0] not in dup_func_name:
-    #         continue
-    #     # print(f'forward_func_name: {forward_func_name}, func_ancestors: {func_ancestors}')
-    #     fwd_df = get_forward_duration_dup(df, forward_func_name.split('@')[0], func_ancestors, cg, func_mapping_node_index)
-    #     # print(f"forward_func_name: {forward_func_name}, df:\n {fwd_df[['s_name', 'kernel_span', 'first_kernel_start', 'last_kernel_end']]}")
-    #     # print(f'fwd_df: {fwd_df}')
-        
-    #     # print(fwd_dur)
-    #     func_mapping_node_index[forward_func_name] = fwd_df.index
-        # bwd_df = get_backward_duration(df, fwd_df.index)
-        # bwd_dur = calculate_statistics(bwd_df, forward_func_name+'-bwd', 'kernel_dur_sum', 'bwd')
-        # print(bwd_dur)
-        # stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, fwd_dur, bwd_dur], axis=0)
+
     shape_info = extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name)
     # print(shape_info)
     (root_func_name, _) = func_name[0]
@@ -177,13 +137,20 @@ if __name__ == "__main__":
     stat_info_funcs_grouped['mean_percent'] = stat_info_funcs_grouped.apply(lambda row: cal_dur_percent(row, fwd_total_dur_mean, bwd_total_dur_mean), axis=1)
 
     stat_info_funcs_grouped.to_csv('profile-0413-update.csv')
-    # print(f'stat_info_funcs_grouped: \n{stat_info_funcs_grouped}')
     shape_info = extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name)
     for forward_func_name, func_ancestors in func_name:
         if forward_func_name.split('@')[0] in need_shape_func_name:
             shape_dim = shape_info[forward_func_name]['example'][:SHAPE_POSITION[forward_func_name.split('@')[0]]]
             shape_dim[0][0] = int(shape_info[forward_func_name]['data'].mean())
-            print(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}')
+            mfu = 0
+            if need_shape_func_name[forward_func_name.split('@')[0]] == 2:
+                dims = set({shape_dim[0][0], shape_dim[0][1], shape_dim[1][0], shape_dim[1][1]})
+                m,n,k =dims
+                mfu = 2*m*n*k/stat_info_funcs_grouped.loc[forward_func_name,"mean"]*1000/458
+            else:
+                m,n = shape_dim[0]
+                mfu = 2*m*n/stat_info_funcs_grouped.loc[forward_func_name,"mean"]*1000
+            print(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}, mfu: {mfu}')
         else:
             print(f'{"    " * len(func_ancestors)}{forward_func_name}')
         # forward_func_name

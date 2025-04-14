@@ -142,15 +142,15 @@ if __name__ == "__main__":
         if forward_func_name.split('@')[0] in need_shape_func_name:
             shape_dim = shape_info[forward_func_name]['example'][:SHAPE_POSITION[forward_func_name.split('@')[0]]]
             shape_dim[0][0] = int(shape_info[forward_func_name]['data'].mean())
-            mfu = 0
-            if need_shape_func_name[forward_func_name.split('@')[0]] == 2:
+            if SHAPE_POSITION[forward_func_name.split('@')[0]] == 2:
                 dims = set({shape_dim[0][0], shape_dim[0][1], shape_dim[1][0], shape_dim[1][1]})
-                m,n,k =dims
-                mfu = 2*m*n*k/stat_info_funcs_grouped.loc[forward_func_name,"mean"]*1000/458
+                m,n,k = dims
+                mfu = 2*m*n*k/stat_info_funcs_grouped.loc[forward_func_name,"mean"]*1000/(1e12)/458
+                print(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}, mfu: {mfu:.3f}')
             else:
                 m,n = shape_dim[0]
-                mfu = 2*m*n/stat_info_funcs_grouped.loc[forward_func_name,"mean"]*1000
-            print(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}, mfu: {mfu}')
+                bw_usage = 2*m*n/stat_info_funcs_grouped.loc[forward_func_name,"mean"]*1000/(1024**3)
+                print(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}, bw_usage: {bw_usage:.3f}')
         else:
             print(f'{"    " * len(func_ancestors)}{forward_func_name}')
         # forward_func_name

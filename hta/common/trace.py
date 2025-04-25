@@ -8,7 +8,6 @@ import gzip
 import json
 import multiprocessing as mp
 import os
-import re
 import sys
 import time
 import tracemalloc
@@ -17,9 +16,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 
 import pandas as pd
+import re
 
+from hta.common.trace_df import save_trace_df_to_file
 from hta.common.trace_file import create_rank_to_trace_dict, get_trace_files
-from hta.common.trace_filter import CPUOperatorFilter, GPUKernelFilter
+from hta.common.trace_filter import CPUOperatorFilter, GPUKernelFilter, create_regex_for_prefix_match
 from hta.common.trace_parser import parse_trace_dataframe, parse_trace_dict
 from hta.common.trace_symbol_table import (
     decode_symbol_id_to_symbol_name,
@@ -29,6 +30,9 @@ from hta.configs.config import logger
 from hta.configs.default_values import DEFAULT_TRACE_DIR
 from hta.configs.parser_config import ParserConfig
 from hta.utils.utils import get_mp_pool_size, normalize_path
+from hta.common.trace_filter import NameFilter, GPUKernelFilter, CompositeFilter, TimeRangeFilter
+from hta.utils.parallel_state import get_next_pipeline_rank, is_first_stage, is_last_stage
+from hta.utils.utils import add_rank_to_filename, apply_function_for_parallel
 
 MetaData = Dict[str, Any]
 PHASE_COUNTER: str = "C"
@@ -250,7 +254,6 @@ def parse_trace_file(
     cfg = cfg or ParserConfig.get_default_cfg()
 
     meta, df, local_symbol_table = parse_trace_dataframe(trace_file_path, cfg)
-
     # add fwd bwd links between CPU ops
     add_fwd_bwd_links(df, local_symbol_table)
     df = transform_correlation_to_index(df, local_symbol_table)
@@ -262,6 +265,7 @@ def parse_trace_file(
     logger.warning(
         f"Overall parsing of {trace_file_path} in {(t_end - t_start):.2f} seconds; current PID:{os. getpid()}"
     )
+
     return meta, df, local_symbol_table
 
 
@@ -336,7 +340,6 @@ def add_fwd_bwd_links(df: pd.DataFrame, symbol_table: TraceSymbolTable) -> None:
     df.drop(list(columns_to_drop), axis=1, inplace=True)
     t1 = time.perf_counter()
     logger.debug(f"Time taken to add fwd_bwd links: {t1 - t0 :.2f} seconds")
-
 
 class Trace:
     """
@@ -854,3 +857,365 @@ class Trace:
         rank_min_ts = self.traces[rank]["ts"].min()
         rank_metadata = self.meta_data[rank]
         return trace_event_timestamp_to_unixtime_ns(rank_min_ts, rank_metadata)
+    
+    def parallel_apply(self, function, need_rank=False):
+        if need_rank:
+            inputs = list(self.traces.items())
+        else:
+            inputs = list(self.traces.values())
+        results = apply_function_for_parallel(function, inputs)
+        keys = list(self.traces.keys())
+        return {key: result for key, result in zip(keys, results)}
+    
+    def save_traces(self, file_path, ranks=None):
+        if ranks is None:
+            effective_ranks = self.get_ranks()
+        else:
+            effective_ranks = set(ranks).intersection(set(self.get_ranks()))
+        
+        inputs = []
+        for rank in effective_ranks:
+            file_path_with_rank = add_rank_to_filename(file_path, rank)
+            inputs.append([self.traces[rank], file_path_with_rank, None, self.meta_data[rank]])
+        apply_function_for_parallel(save_trace_df_to_file, inputs)
+    
+    @staticmethod
+    def combine_into_one_trace(traces_dict: dict):
+        all_trace_dfs = []
+        for rank, trace_df in traces_dict.items():
+            trace_df['rank'] = rank
+            all_trace_dfs.append(trace_df)
+        trace_df = pd.concat(all_trace_dfs, ignore_index=True)
+        return trace_df
+    
+    @staticmethod
+    def display_traces_info(traces):
+        first_trace_df = next(iter(traces.values()))
+        logger.info(f'total {len(traces)} traces, and each trace has {len(first_trace_df)} items')
+        logger.info(first_trace_df['s_cat'].value_counts())
+
+class MegatronPipelineParrallelGroupTrace(Trace):
+    def __init__(
+        self,
+        trace_files: Optional[Dict[int, str]] = None,
+        trace_dir: str = DEFAULT_TRACE_DIR,
+        data_parallel_size = -1,
+        tensor_parallel_size = -1,
+        pipeline_parallel_size = -1,
+    ) -> None:
+        super().__init__(trace_files, trace_dir)
+        self.data_parallel_size = data_parallel_size
+        self.tensor_parallel_size = tensor_parallel_size
+        self.pipeline_parallel_size = pipeline_parallel_size
+        self.with_gpu_kernel = False
+        self.traces_comm_only : Dict[int, pd.DataFrame] = {}
+            
+    def load_traces(self, include_last_profiler_step: Optional[bool] = False) -> None:
+        if self.is_parsed:
+            logger.warning("Traces are already parsed and loaded!")
+            return
+        self.parse_traces(use_multiprocessing=False)
+        
+        self.with_gpu_kernel = True
+        for rank, trace_df in self.traces.items():
+            # num_cpu_kernels = trace_df[trace_df["stream"].eq(-1)]
+            num_gpu_kernels = len(trace_df[trace_df["stream"].ne(-1)])
+            if num_gpu_kernels == 0:
+                self.with_gpu_kernel = False
+        
+        self.align_and_filter_trace(include_last_profiler_step)
+        for rank, df in self.traces.items():
+            df = self.traces[rank].set_index("index", drop=False)
+            df.index.names = [None]
+            self.traces[rank] = df
+        self.is_parsed = True
+        self.set_rank_info()
+    
+    @staticmethod
+    def set_self_microbatch_id(trace_df):
+        trace_df.sort_values(by=['ts', 'dur'], ascending=[True, False], inplace=True)
+
+        # 初始化micro_batch_id列
+        trace_df['micro_batch_id_forward'] = -1
+        trace_df['micro_batch_id_backward'] = -1
+
+        # 标记包含'recv_forward'和'recv_backward'的行
+        trace_df['recv_forward'] = trace_df['s_name'].str.contains('recv_forward').astype(int).cumsum() - 1
+        trace_df['recv_backward'] = trace_df['s_name'].str.contains('recv_backward').astype(int).cumsum() - 1
+
+        # 更新'micro_batch_id_forward'和'micro_batch_id_backward'
+        trace_df.loc[trace_df['s_name'].str.contains('forward'), 'micro_batch_id_forward'] = trace_df['recv_forward']
+        trace_df.loc[trace_df['s_name'].str.contains('backward'), 'micro_batch_id_backward'] = trace_df['recv_backward']
+
+        # 移除辅助列
+        trace_df.drop(['recv_forward', 'recv_backward'], axis=1, inplace=True)
+    
+    @staticmethod
+    def set_recv_send_microbatch_id(trace_df):
+        trace_df['send_prev'] = -1
+        trace_df['send_next'] = -1
+        trace_df['recv_prev'] = -1
+        trace_df['recv_next'] = -1
+
+        trace_df.loc[trace_df['s_name'].str.contains('mccl:recv(forward)', regex=False), 'recv_prev'] = trace_df['micro_batch_id_forward']
+        trace_df.loc[trace_df['s_name'].str.contains('mccl:recv(backward)', regex=False), 'recv_next'] = trace_df['micro_batch_id_backward']
+        trace_df.loc[trace_df['s_name'].str.contains('mccl:send(forward)', regex=False), 'send_next'] = trace_df['micro_batch_id_forward']
+        trace_df.loc[trace_df['s_name'].str.contains('mccl:send(backward)', regex=False), 'send_prev'] = trace_df['micro_batch_id_backward']
+    
+    def process_pipeline_start_end(self, rank, df):
+        if is_first_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
+            df.loc[df['s_name'].str.contains('recv_forward'), 'recv_prev'] = -1
+            df.loc[df['s_name'].str.contains('send_backward'), 'send_prev'] = -1
+        if is_last_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
+            df.loc[df['s_name'].str.contains('recv_backward'), 'recv_next'] = -1
+            df.loc[df['s_name'].str.contains('send_forward'), 'send_next'] = -1
+
+    def set_micro_batch_id(self):
+        for rank in self.get_ranks():
+            self.set_self_microbatch_id(self.traces[rank])
+            self.set_recv_send_microbatch_id(self.traces[rank])
+            self.process_pipeline_start_end(rank, self.traces[rank])
+
+    def keep_useful_span(self, trace_df):
+        user_annotation_names_list = [
+            'warmup_state', 
+            'steady_state', 
+            'cooldown_state', 
+            'mccl:', 
+            'ProfilerStep', 
+        ]
+        python_function_names_list = [
+            'forward_step', 
+            'backward_step',
+            'forward_backward_pipelining_without_interleaving',
+            'recv_forward', 
+            'recv_backward', 
+            'send_forward', 
+            'send_backward', 
+            'send_forward_recv_backward', 
+            'send_backward_recv_forward',
+            'Embedding', 
+            'RotaryEmbedding', 
+            'ParallelAttention', 
+            'ParallelMLP',  
+            'ParallelTransformerLayer',
+            'ColumnParallelLinear', 
+            'RowParallelLinear', 
+            'FlashSelfAttention',
+            'MixedFusedLayerNorm',
+            'post_language_model_processing', 
+            'parallel_lm_logits', 
+            'vocab_parallel_cross_entropy', 
+            'average_losses_across_data_parallel_group',  
+            'apply_rotary_pos_emb',
+            'get_batch', 
+            'loss_func',
+            'step',
+            'reduce_model_grads',
+            'allreduce_layernorm_grads',
+            'allreduce_embedding_grads',
+            'allreduce_word_embedding_grads',
+            'allreduce_position_embedding_grads',
+            'gather_model_params',
+            '_copy_model_grads_to_main_grads',
+            '_unscale_main_grads_and_check_for_nan',
+            'clip_grad_norm',
+            '_copy_main_params_to_model_params'
+        ]
+        
+        cpu_op_names_list = [
+            'aten::embedding',
+            'aten::matmul', 
+            'aten::rms_norm_forward', 
+            'aten::scaled_dot_product_attention', 
+            'aten::rms_norm_backward', 
+            'aten::_scaled_dot_product_attention_flash_musa_backward', 
+            'aten::embedding_backward',
+            'autograd::',
+            'torch::autograd::',
+            'autograd::engine::evaluate_function',
+        ]
+        
+        filter_user_annotation = NameFilter(create_regex_for_prefix_match(user_annotation_names_list))
+        filter_python_function = NameFilter(create_regex_for_prefix_match(python_function_names_list))
+        filter_cpu_op = NameFilter(create_regex_for_prefix_match(cpu_op_names_list))
+        
+        trace_df_user_annotation = filter_user_annotation(trace_df[trace_df['s_cat'] == 'user_annotation'])
+        trace_df_python_function = filter_python_function(trace_df[trace_df['s_cat'] == 'python_function'])
+        trace_df_cpu_op = filter_cpu_op(trace_df[trace_df['s_cat'] == 'cpu_op'])
+        
+        trace_df = pd.concat([trace_df_user_annotation, trace_df_python_function, trace_df_cpu_op])
+        
+        return trace_df
+    
+    def keep_comm_span_only(self, trace_df):
+        comm_names_list = [
+            'forward_step', 
+            'backward_step', 
+            'recv_forward', 
+            'recv_backward', 
+            'send_forward', 
+            'send_backward', 
+            'send_forward_recv_backward', 
+            'send_backward_recv_forward', 
+            'mccl:send', 
+            'mccl:recv', 
+            'reduce_model_grads',
+            'step',
+            'gather_model_params',
+            '_copy_model_grads_to_main_grads',
+            '_unscale_main_grads_and_check_for_nan',
+            'clip_grad_norm',
+            '_copy_main_params_to_model_params',
+            # 'mccl:all_reduce'
+        ]
+        filter_comm = NameFilter(create_regex_for_prefix_match(comm_names_list))
+        
+        return filter_comm(trace_df)
+            
+    
+    def get_p2p_ranks_pairs(self, ranks):
+        if len(ranks) < 2: return []
+        ranks_sorted = sorted(ranks)
+        p2p_devices_pairs = []
+        for i in range(len(ranks_sorted) - 1):
+            if(ranks[i+1] == get_next_pipeline_rank(ranks[i], self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size)):
+                p2p_devices_pairs.append([ranks[i], ranks[i+1]])
+        return p2p_devices_pairs 
+
+    def get_useful_trace_df(self, trace_df):
+        return trace_df[~(trace_df[['send_prev', 'send_next', 'recv_prev', 'recv_next']] < 0).all(axis=1)]
+    
+    def get_p2p_trace_for_one_pair(self, rank_prev, rank_next):
+        """
+        Compute the point-to-point (P2P) communication times between two ranks.
+
+        Args:
+            rank_prev (int): The previous rank.
+            rank_next (int): The next rank.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing the bidirectional P2P communication times.
+        """
+        # Get the DataFrames for the given ranks
+        trace_df_prev = self.traces[rank_prev]
+        trace_df_next = self.traces[rank_next]
+        
+        useful_trace_df_prev = self.get_useful_trace_df(trace_df_prev)
+        useful_trace_df_next = self.get_useful_trace_df(trace_df_next)
+
+        # Compute forward P2P communication times
+        df_p2p_forward = self._compute_p2p_forward(useful_trace_df_prev, useful_trace_df_next)
+        self._update_comm_time(trace_df_prev, df_p2p_forward, 'send_next', 'send_next_on_prev')
+        self._update_comm_time(trace_df_next, df_p2p_forward, 'recv_prev', 'recv_prev_on_next')
+
+        # Compute backward P2P communication times
+        df_p2p_backward = self._compute_p2p_backward(useful_trace_df_prev, useful_trace_df_next)
+        self._update_comm_time(trace_df_prev, df_p2p_backward, 'recv_next', 'recv_next_on_prev')
+        self._update_comm_time(trace_df_next, df_p2p_backward, 'send_prev', 'send_prev_on_next')
+
+        # Update the original DataFrames with the wait times
+        self._update_wait_time(trace_df_prev)
+        self._update_wait_time(trace_df_next)
+
+        # Concatenate the forward and backward P2P DataFrames
+        df_p2p_bidirection = pd.concat([df_p2p_forward, df_p2p_backward])
+
+        return df_p2p_bidirection
+
+    def _compute_p2p_forward(self, df_prev, df_next):
+        """
+        Compute the forward P2P communication times between two DataFrames.
+
+        Args:
+            df_prev (pd.DataFrame): The previous rank DataFrame.
+            df_next (pd.DataFrame): The next rank DataFrame.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing the forward P2P communication times.
+        """
+        
+        df_p2p_forward = pd.merge(df_prev, df_next, left_on='send_next', right_on='recv_prev', how='inner', suffixes=('_on_prev', '_on_next'))
+        df_p2p_forward = df_p2p_forward[df_p2p_forward['send_next_on_prev'] >= 0]
+        df_p2p_forward['p2p_forward'] = True
+        df_p2p_forward['comm_time'] = np.minimum(df_p2p_forward['dur_on_prev'], df_p2p_forward['dur_on_next'])
+            
+        return df_p2p_forward
+
+    def _compute_p2p_backward(self, df_prev, df_next):
+        """
+        Compute the backward P2P communication times between two DataFrames.
+
+        Args:
+            df_prev (pd.DataFrame): The previous rank DataFrame.
+            df_next (pd.DataFrame): The next rank DataFrame.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing the backward P2P communication times.
+        """
+        df_p2p_backward = pd.merge(df_prev, df_next, left_on='recv_next', right_on='send_prev', how='inner', suffixes=('_on_prev', '_on_next'))
+        df_p2p_backward = df_p2p_backward[df_p2p_backward['recv_next_on_prev'] >= 0]
+        df_p2p_backward['p2p_backward'] = True
+        df_p2p_backward['comm_time'] = np.minimum(df_p2p_backward['dur_on_prev'], df_p2p_backward['dur_on_next'])
+        return df_p2p_backward
+
+    def _update_comm_time(self, original_df, p2p_df, merge_col_original, merge_col_p2p):
+        """
+        Update the communication times in the original DataFrame based on the P2P DataFrame.
+
+        Args:
+            original_df (pd.DataFrame): The original DataFrame to update.
+            p2p_df (pd.DataFrame): The P2P DataFrame containing the communication times.
+            merge_col_original (str): The column name in the original DataFrame to merge on.
+            merge_col_p2p (str): The column name in the P2P DataFrame to merge on.
+        """
+        # Ensure 'comm_time' column exists in the original DataFrame
+        if 'comm_time' not in original_df.columns:
+            original_df['comm_time'] = 0
+
+        # Merge the DataFrames and handle suffixes to avoid renaming issues
+        temp_df = pd.merge(
+            original_df,
+            p2p_df[[merge_col_p2p, 'comm_time']].rename(columns={'comm_time': 'comm_time_p2p'}),
+            left_on=merge_col_original,
+            right_on=merge_col_p2p,
+            how='left'
+        )
+        # Align indices of the original DataFrame with the merged DataFrame to ensure proper assignment
+        comm_tmp = temp_df['comm_time'].fillna(0) + temp_df['comm_time_p2p'].fillna(0)
+        # Update the original DataFrame with the calculated communication time
+        original_df['comm_time'] = comm_tmp.values
+
+    def _update_wait_time(self, df):
+        """
+        Update the wait times in the DataFrame based on the communication times.
+
+        Args:
+            df (pd.DataFrame): The DataFrame to update.
+        """
+        df['wait_time'] = df['dur'] - df['comm_time']
+
+    
+    def establish_p2p_link_on_adjacent_ranks(self):
+        rank_pairs = self.get_p2p_ranks_pairs(self.get_ranks())
+        self.traces_p2p_comm = {}
+        for rank_prev, rank_next in rank_pairs:
+            df_p2p_bidirection = self.get_p2p_trace_for_one_pair(rank_prev, rank_next)
+            self.traces_p2p_comm[rank_prev] = df_p2p_bidirection
+        
+        self.trace_df_p2p_flow_events = self.combine_into_one_trace(self.traces_p2p_comm)
+    
+    def save_traces_with_p2p_comm(self, save_path, traces=None, trace_df_p2p_flow_events=None, meta_data=None):
+        if traces is None:
+            traces = self.traces
+        if trace_df_p2p_flow_events is None:
+            trace_df_p2p_flow_events = self.trace_df_p2p_flow_events
+        if meta_data is None:
+            meta_data = self.meta_data
+        trace_df_all_ranks = self.combine_into_one_trace(traces)
+        save_trace_df_to_file(trace_df_all_ranks, save_path, trace_df_p2p_flow_events, next(iter(meta_data.values())))
+    
+    def set_rank_info(self):
+        for rank in self.get_ranks():
+            self.traces[rank]['rank'] = rank    
+    

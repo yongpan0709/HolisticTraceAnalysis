@@ -1,0 +1,1 @@
+bash ../scripts/distribute_execute.sh hostfile install_env.sh

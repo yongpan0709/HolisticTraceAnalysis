@@ -3,7 +3,6 @@ from typing import Dict, Generator, List, Optional
 
 import pandas as pd
 import os
-
 from hta.common.trace import get_cpu_gpu_correlation, Trace
 from hta.common.trace_call_stack import CallStackGraph, CallStackIdentity, CallStackNode
 from hta.common.trace_symbol_table import TraceSymbolTable
@@ -21,9 +20,9 @@ class CallGraph:
     The hierarchical structure is as follows:
     + Distributed training job
     ++ Trainer
-    +++ Process
-    ++++ Thread/Stream
-    +++++ A sequence of trace events represented with a CallStackGraph object
+        +++ Process
+        ++++ Thread/Stream
+            ++++ A sequence of trace events represented with a CallStackGraph object
 
     A CallGraph object includes one or all CallStackGraph objects of the traces and supports further query and
     statistical APIs which utilize the relation links between two or more trace events, such as Cuda Kernel
@@ -134,66 +133,22 @@ class CallGraph:
         """
         Construct the call graph from the traces of a distributed training job.
         """
+        # TODO:
+        # - make it parallel when there are more than one ranks.
         logger.debug(f"Constructing Call Graph for ranks: {self.ranks}")
-        
-        s_map: pd.Series = pd.Series(self.trace_data.symbol_table.get_sym_id_map())
-        s_tab: pd.Series = pd.Series(self.trace_data.symbol_table.get_sym_table())
-        main_thread_indicators: pd.Series = s_map[
-            s_map.index.str.startswith("ProfilerStep#") | 
-            s_map.index.str.startswith("forward_step")
-        ]
-        bwd_thread_indicators: pd.Series = s_map[s_map.index.str.contains("autograd::")]
-        
-        def _infer_stack_label(stack: CallStackGraph) -> str:
-            name_ids = stack.df["name"].unique()
-            if set(name_ids).intersection(set(main_thread_indicators.values)):
-                label = "main"
-            elif set(name_ids).intersection(set(bwd_thread_indicators.values)):
-                label = "bwd"
-            elif len(name_ids) > 0:
-                label = s_tab[name_ids[0]]
-            else:
-                label = "empty"
-            return label
-        
-        instances = [self for _ in self.ranks]
-        inputs = [((), {'rank': rank}) for rank in self.ranks]
-        results = apply_class_function_for_parallel(instances, '_construct_call_graph_for_rank', inputs, use_multiprocessing=True)
-        
-        for rank, (nodes, call_stacks) in zip(self.ranks, results):
-            self.rank_to_nodes[rank] = nodes
+        for rank in self.ranks:
+            t0 = perf_counter()
+            self.rank_to_nodes[rank] = {}
             self.rank_to_stacks[rank] = {}
-            for csi, csg in call_stacks.items():
-                self.rank_to_stacks[rank][csi] = csg
-                self.call_stacks.append(csg)
-                
-                self.mapping.loc[len(self.mapping)] = (
-                    csi.rank,
-                    csi.pid,
-                    csi.tid,
-                    _infer_stack_label(csg),
-                    len(self.call_stacks) - 1,
-                    csg.root_index,
-                    1,
-                )
-                
-            self._connect_stacks(rank)
-            logger.debug("connecting stacks of forward and backward threads")
-            self._update_rank_stack_mapping(rank)
-        
-        # Save call stack information to the dataframe
-        if len(self.call_stacks) > 0:
-            csg = self.call_stacks[-1]
-            csg.save_call_stack_to_dataframe(apply_whole_graph=True)
-        
-    def _construct_call_graph_for_rank(self, rank):
-        df = self.trace_data.get_trace(rank)
-        
-        # add an "end" column for time interval based filtering
-        if "end" not in df.columns:
-            df["end"] = df["ts"] + df["dur"]
-        
-        return self._build_call_stacks(df, self.trace_data.symbol_table, rank)
+            df = self.trace_data.get_trace(rank)
+            # add an "end" column for time interval based filtering
+            if "end" not in df.columns:
+                df["end"] = df["ts"] + df["dur"]
+            self._build_call_stacks(df, self.trace_data.symbol_table, rank)
+            t1 = perf_counter()
+            logger.debug(
+                f"constructed {len(self.rank_to_stacks[rank])} call stacks for rank {rank} in {t1-t0:.2f} seconds"
+            )
 
     def _build_call_stacks(
         self,
@@ -217,9 +172,30 @@ class CallGraph:
         df.loc[df.index, "first_kernel_start"] = -1
         df.loc[df.index, "last_kernel_end"] = -1
 
+        s_map: pd.Series = pd.Series(self.trace_data.symbol_table.get_sym_id_map())
+        s_tab: pd.Series = pd.Series(self.trace_data.symbol_table.get_sym_table())
+        main_thread_indicators: pd.Series = s_map[
+            s_map.index.str.startswith("ProfilerStep#")
+        ]
+        bwd_thread_indicators: pd.Series = s_map[s_map.index.str.contains("autograd::")]
+
+        def _infer_stack_label(stack: CallStackGraph) -> str:
+            name_ids = stack.df["name"].unique()
+            if set(name_ids).intersection(set(main_thread_indicators.values)):
+                label = "main"
+            elif set(name_ids).intersection(set(bwd_thread_indicators.values)):
+                label = "bwd"
+            elif len(name_ids) > 0:
+                label = s_tab[name_ids[0]]
+            else:
+                label = "empty"
+            return label
+
         df_correlation = get_cpu_gpu_correlation(df)
-        nodes: Dict[int, CallStackNode] = {}
-        call_stacks: Dict[CallStackIdentity, CallStackGraph] = {}
+        call_stacks: Dict[CallStackIdentity, CallStackGraph] = self.rank_to_stacks[rank]
+        nodes: Dict[int, CallStackNode] = self.rank_to_nodes[rank]
+        nodes.clear()
+
         for (pid, tid), df_thread in df.groupby(["pid", "tid"]):
             csi = CallStackIdentity(rank, pid, tid)
             device = infer_device_type(df_thread)
@@ -244,17 +220,34 @@ class CallGraph:
                 save_call_stack_to_df=False,
             )
             call_stacks[csi] = csg
+            self.call_stacks.append(csg)
+
+            self.mapping.loc[len(self.mapping)] = (
+                csi.rank,
+                csi.pid,
+                csi.tid,
+                _infer_stack_label(csg),
+                len(self.call_stacks) - 1,
+                csg.root_index,
+                1,
+            )
             t1 = perf_counter()
             logger.debug(
                 f"Created CallStackGraph of {csg.identity}: num_events={csg.df.shape[0]}, num_nodes={len(csg.nodes)}"
                 f"in {t1-t0:.2f} seconds"
             )
 
+        logger.debug("connecting stacks of forward and backward threads")
+        self._connect_stacks(rank)
+        self._update_rank_stack_mapping(rank)
+
+        # Save call stack information to the dataframe
+        if len(self.call_stacks) > 0:
+            csg = self.call_stacks[-1]
+            csg.save_call_stack_to_dataframe(apply_whole_graph=True)
+
         self._normalize_stack_columns(df)
-        
-        return nodes, call_stacks
-        
-        
+
     @staticmethod
     def _normalize_stack_columns(df: pd.DataFrame) -> None:
         """Normalize the values of the stack columns."""
@@ -280,7 +273,7 @@ class CallGraph:
             stack_indices: List[int] = stacks["stack_index"].to_list()
             bwd_stack: CallStackGraph = self.call_stacks[stack_indices[0]]
             main_stack: CallStackGraph = self.call_stacks[stack_indices[1]]
-            self._link_main_and_bwd_stacks(main_stack, bwd_stack, bwd_annotation_str='backward_step')
+            self._link_main_and_bwd_stacks(main_stack, bwd_stack)
 
     def _update_rank_stack_mapping(self, rank: int) -> None:
         """Update the stack root and index after connect CallStackGraph objects."""
@@ -309,15 +302,17 @@ class CallGraph:
 
         def _get_backward_parents() -> List[int]:
             s_map: pd.Series = pd.Series(self.trace_data.symbol_table.get_sym_id_map())
+
             # Not all traces have a <bwd_annotation_str>. However, it is still possible to
             # attach the bwd stack to the main stack for each Profiler Step.
             for bwd_top_layer_annotation in [bwd_annotation_str, "ProfilerStep#"]:
                 bwd_annotation_ids: pd.Series = s_map[
-                    s_map.index.str.contains(bwd_top_layer_annotation)
+                    s_map.index.str.startswith(bwd_top_layer_annotation)
                 ]
                 bwd_annotation_indices = main_stack.df[
                     main_stack.df["name"].isin(bwd_annotation_ids.values)
                 ]["index"].values.tolist()
+
                 if len(bwd_annotation_indices) > 0:
                     return bwd_annotation_indices
             return []
@@ -490,65 +485,3 @@ class CallGraph:
         if rank and rank != self._cached_rank:
             self._update_cached_data(rank)
         return self._cached_gpu_kernels
-    
-    def get_first_stack_on_rank(self, rank):
-        first_call_stack_id, first_call_stack = next(iter(self.rank_to_stacks[rank].items()))
-        return first_call_stack_id, first_call_stack
-    
-    def get_main_stack_on_rank(self, rank):
-        main_stack_info = self.mapping.loc[
-            self.mapping["rank"].eq(rank) & self.mapping["label"].eq("main")
-        ]
-        
-        if len(main_stack_info) != 1:
-            logger.warning(f'no main stack on rank {rank}, use first stack')
-            return self.get_first_stack_on_rank(rank)
-
-        main_stack_info = main_stack_info.iloc[0].to_dict()
-        main_stack_id = None
-        for call_stack_id in self.rank_to_stacks[rank].keys():
-            if main_stack_info['rank'] == call_stack_id.rank and \
-                main_stack_info['pid'] == call_stack_id.pid and \
-                main_stack_info['tid'] == call_stack_id.tid:
-                    main_stack_id = call_stack_id
-                    break
-        assert(main_stack_id is not None)
-        main_stack = self.rank_to_stacks[rank][main_stack_id]
-        return main_stack_id, main_stack
-
-    def apply_function_for_parallel(self, func_name, inputs_list=None):
-        stacks = [self.get_main_stack_on_rank(rank) for rank in self.ranks]
-        stacks_ids = [stack[0] for stack in stacks]
-        stacks_instances = [stack[1] for stack in stacks]
-        self.call_stacks = [stack for stack in self.call_stacks if stack not in stacks_instances]
-        
-        apply_class_function_for_parallel(stacks_instances, func_name, inputs_list)
-        
-        for rank, stack_id, stack_instance in zip(self.ranks, stacks_ids, stacks_instances):
-            self.rank_to_stacks[rank][stack_id] = stack_instance
-            self.trace_data.traces[rank] = stack_instance.full_df
-        self.call_stacks += stacks_instances        
-    
-    def print_call_graph(self, save_path=None):
-        if save_path is not None:
-            inputs_list = [
-                ((), {'save_path': add_rank_to_filename(save_path, rank)})
-                for rank in self.ranks
-            ]
-        else:
-            inputs_list = None
-
-        self.apply_function_for_parallel('print_call_stack', inputs_list)
-                
-    def mark_send_recv_direction(self):
-        self.apply_function_for_parallel('mark_send_recv_direction')
-    
-    def eliminate_duplicate_named_children(self, target_name_list):
-        inputs_list = [((), {'target_name_list': target_name_list}) for _ in self.ranks]
-        self.apply_function_for_parallel('eliminate_duplicate_named_children', inputs_list)
-    
-    def assign_full_names(self):
-        self.apply_function_for_parallel('assign_full_names')
-    
-    def rename_children_with_duplicate_names(self):
-        self.apply_function_for_parallel('rename_children_with_duplicate_names')

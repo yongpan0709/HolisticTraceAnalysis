@@ -2,7 +2,6 @@ from time import perf_counter
 from typing import Dict, Generator, List, Optional
 
 import pandas as pd
-import os
 from hta.common.trace import get_cpu_gpu_correlation, Trace
 from hta.common.trace_call_stack import CallStackGraph, CallStackIdentity, CallStackNode
 from hta.common.trace_symbol_table import TraceSymbolTable
@@ -157,7 +156,6 @@ class CallGraph:
         
         instances = [self for _ in self.ranks]
         inputs = [((), {'rank': rank}) for rank in self.ranks]
-        print(f'_construct_call_graph: inputs: {inputs}')
         results = apply_class_function_for_parallel(instances, '_construct_call_graph_for_rank', inputs, use_multiprocessing=True)
         
         for rank, (nodes, call_stacks) in zip(self.ranks, results):
@@ -490,3 +488,65 @@ class CallGraph:
         if rank and rank != self._cached_rank:
             self._update_cached_data(rank)
         return self._cached_gpu_kernels
+    
+    def get_first_stack_on_rank(self, rank):
+        first_call_stack_id, first_call_stack = next(iter(self.rank_to_stacks[rank].items()))
+        return first_call_stack_id, first_call_stack
+    
+    def get_main_stack_on_rank(self, rank):
+        main_stack_info = self.mapping.loc[
+            self.mapping["rank"].eq(rank) & self.mapping["label"].eq("main")
+        ]
+        
+        if len(main_stack_info) != 1:
+            logger.warning(f'no main stack on rank {rank}, use first stack')
+            return self.get_first_stack_on_rank(rank)
+
+        main_stack_info = main_stack_info.iloc[0].to_dict()
+        main_stack_id = None
+        for call_stack_id in self.rank_to_stacks[rank].keys():
+            if main_stack_info['rank'] == call_stack_id.rank and \
+                main_stack_info['pid'] == call_stack_id.pid and \
+                main_stack_info['tid'] == call_stack_id.tid:
+                    main_stack_id = call_stack_id
+                    break
+        assert(main_stack_id is not None)
+        main_stack = self.rank_to_stacks[rank][main_stack_id]
+        return main_stack_id, main_stack
+
+    def apply_function_for_parallel(self, func_name, inputs_list=None):
+        stacks = [self.get_main_stack_on_rank(rank) for rank in self.ranks]
+        stacks_ids = [stack[0] for stack in stacks]
+        stacks_instances = [stack[1] for stack in stacks]
+        self.call_stacks = [stack for stack in self.call_stacks if stack not in stacks_instances]
+        
+        apply_class_function_for_parallel(stacks_instances, func_name, inputs_list)
+        
+        for rank, stack_id, stack_instance in zip(self.ranks, stacks_ids, stacks_instances):
+            self.rank_to_stacks[rank][stack_id] = stack_instance
+            self.trace_data.traces[rank] = stack_instance.full_df
+        self.call_stacks += stacks_instances        
+    
+    def print_call_graph(self, save_path=None):
+        if save_path is not None:
+            inputs_list = [
+                ((), {'save_path': add_rank_to_filename(save_path, rank)})
+                for rank in self.ranks
+            ]
+        else:
+            inputs_list = None
+
+        self.apply_function_for_parallel('print_call_stack', inputs_list)
+                
+    def mark_send_recv_direction(self):
+        self.apply_function_for_parallel('mark_send_recv_direction')
+    
+    def eliminate_duplicate_named_children(self, target_name_list):
+        inputs_list = [((), {'target_name_list': target_name_list}) for _ in self.ranks]
+        self.apply_function_for_parallel('eliminate_duplicate_named_children', inputs_list)
+    
+    def assign_full_names(self):
+        self.apply_function_for_parallel('assign_full_names')
+    
+    def rename_children_with_duplicate_names(self):
+        self.apply_function_for_parallel('rename_children_with_duplicate_names')

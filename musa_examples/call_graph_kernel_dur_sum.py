@@ -105,7 +105,7 @@ if __name__ == "__main__":
     t.decode_symbol_ids(use_shorten_name=False)
     set_pandas_display_options()
     cg = CallGraph(t, ranks=[0])
-    df = cg.trace_data.traces[0]
+    df = cg.call_stacks[0].full_df
     dup_func_name, need_shape_func_name = extract_dup_or_shape_func_name_from_template(output_template_to_file)
     func_name = extract_func_name_from_template(output_template_to_file)
     stat_info_funcs_grouped = pd.DataFrame()
@@ -116,6 +116,7 @@ if __name__ == "__main__":
             fwd_df = get_forward_duration_uniq(df, forward_func_name.split('@')[0])
         else:
             fwd_df = get_forward_duration_dup(df, forward_func_name.split('@')[0], func_ancestors, cg, func_mapping_node_index)
+        assert len(fwd_df) != 0, "forward_func_name no data: " + forward_func_name
         fwd_dur = calculate_statistics(fwd_df, forward_func_name, 'kernel_span')
         func_mapping_node_index[forward_func_name] = fwd_df.index
         bwd_df = get_backward_duration(df, fwd_df.index)
@@ -123,7 +124,6 @@ if __name__ == "__main__":
         stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, fwd_dur, bwd_dur], axis=0)
 
     shape_info = extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name)
-    # print(shape_info)
     (root_func_name, _) = func_name[0]
     fwd_total_dur_mean = stat_info_funcs_grouped[stat_info_funcs_grouped.index == root_func_name]['mean'].values[0]
     bwd_total_dur_mean = stat_info_funcs_grouped[stat_info_funcs_grouped.index == root_func_name+'-bwd']['mean'].values[0]
@@ -140,6 +140,7 @@ if __name__ == "__main__":
     shape_info = extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name)
     for forward_func_name, func_ancestors in func_name:
         if forward_func_name.split('@')[0] in need_shape_func_name:
+            assert len(shape_info[forward_func_name]['example']) >= SHAPE_POSITION[forward_func_name.split('@')[0]], "No shape info of func name:" + forward_func_name 
             shape_dim = shape_info[forward_func_name]['example'][:SHAPE_POSITION[forward_func_name.split('@')[0]]]
             shape_dim[0][0] = int(shape_info[forward_func_name]['data'].mean())
             if SHAPE_POSITION[forward_func_name.split('@')[0]] == 2:

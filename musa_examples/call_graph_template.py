@@ -25,7 +25,6 @@ pretrain_deepseekv2.py\(\d+\): forward_step
     nn.Module: TransformerLayer_1
         nn.Module: RMSNorm_1
         nn.Module: MLASelfAttention_1
-            aten::scaled_dot_product_attention
         megatron/core/fusions/fused_bias_dropout.py\(\d+\): _bias_dropout_add
         nn.Module: RMSNorm_2
         nn.Module: MoELayer_0
@@ -42,14 +41,14 @@ pretrain_deepseekv2.py\(\d+\): forward_step
                 megatron/core/tensor_parallel/mappings.py\(\d+\): all_to_all @dup@
                     _AllToAll @dup@ @shape@
                 megatron/core/transformer/moe/moe_utils.py\(\d+\): sort_chunks_by_idxs @dup@
-            nn.Module: TEGroupedMLP_0
+            torch/_compile.py\(\d+\): inner
                 nn.Module: TEColumnParallelGroupedLinear_0
-                    _GroupedLinear @dup@ @shape@
+                    transformer_engine/pytorch/module/grouped_linear.py\(\d+\): forward @dup@
                         <built-in method fused_multi_quantize of PyCapsule object at 0x\w+> @dup@
                         transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@
                 megatron/core/fusions/fused_bias_swiglu.py\(\d+\): bias_swiglu_impl
                 nn.Module: TERowParallelGroupedLinear_0
-                    _GroupedLinear @dup@ @shape@
+                    transformer_engine/pytorch/module/grouped_linear.py\(\d+\): forward @dup@
                         <built-in method fused_multi_quantize of PyCapsule object at 0x\w+> @dup@
                         transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@
             megatron/core/transformer/moe/token_dispatcher.py\(\d+\): token_unpermutation

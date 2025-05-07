@@ -99,7 +99,7 @@ if __name__ == "__main__":
     cfg.add_args(ParserConfig.ARGS_INPUT_SHAPE)
     ParserConfig.set_default_cfg(cfg)
     t = Trace(trace_dir=trace_dir)
-    t.parse_traces()
+    t.load_traces()
     # transform name and cat columns to s_name and s_cat
     # name and cat are kernel id
     t.decode_symbol_ids(use_shorten_name=False)

@@ -308,7 +308,8 @@ def find_and_create_symlinks(source_directory, target_directory, suffix_list):
     for filename in os.listdir(source_directory):
         name, ext = os.path.splitext(filename)
         for suffix in suffix_list:
-            if name.endswith(f'_rank{suffix}') or name.startswith(f'worker{suffix}.'):
+            # Todo: check the format of trace filename
+            if name.endswith(f'_rank{suffix}') or name.startswith(f'rank{suffix}.'):
                 source_path = os.path.join(source_directory, filename)
                 target_path = os.path.join(target_directory, filename)
                 

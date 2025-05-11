@@ -873,7 +873,6 @@ class Trace:
             effective_ranks = self.get_ranks()
         else:
             effective_ranks = set(ranks).intersection(set(self.get_ranks()))
-        
         inputs = []
         for rank in effective_ranks:
             file_path_with_rank = add_rank_to_filename(file_path, rank)
@@ -984,20 +983,28 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             'cooldown_state', 
             'mccl:', 
             'ProfilerStep', 
+            'backward_step',
+            'forward_step',
+            'Optimizer.step#FusedAdam.step',
         ]
         python_function_names_list = [
-            'forward_step', 
-            'backward_step',
-            'forward_backward_pipelining_without_interleaving',
-            'recv_forward', 
-            'recv_backward', 
-            'send_forward', 
-            'send_backward', 
-            'send_forward_recv_backward', 
+            'megatron/core/pipeline_parallel/schedules.py(173): forward_step', 
+            'megatron/core/pipeline_parallel/schedules.py(331): backward_step',
+            'megatron/core/pipeline_parallel/schedules.py(129): custom_backward',
+            'megatron/core/pipeline_parallel/schedules.py(1537): recv_forward', 
+            'megatron/core/pipeline_parallel/schedules.py(1548): recv_backward', 
+            'megatron/core/pipeline_parallel/schedules.py(1559): send_forward', 
+            'megatron/core/pipeline_parallel/schedules.py(1569): send_backward', 
+            'megatron/core/pipeline_parallel/schedules.py(1579): send_forward_recv_backward', 
             'send_backward_recv_forward',
-            'Embedding', 
+            'megatron/core/pipeline_parallel/schedules.py(1613): forward_backward_pipelining_without_interleaving',
+            'nn.Module: LanguageModelEmbedding_0',
+            'nn.Module: TransformerLayer_',
+            'nn.Module: RMSNorm_',
+            'nn.Module: MLASelfAttention_1',
+            'megatron/core/fusions/fused_bias_dropout.py(42): _bias_dropout_add',
+            'nn.Module: MoELayer_',
             'RotaryEmbedding', 
-            'ParallelAttention', 
             'ParallelMLP',  
             'ParallelTransformerLayer',
             'ColumnParallelLinear', 

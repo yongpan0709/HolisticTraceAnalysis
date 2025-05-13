@@ -18,3 +18,5 @@ PROCESSES_PER_NODE=$(( (NUM_PROCESS + NUM_NODES - 1) / NUM_NODES ))
 
 # Run mpirun command with even distribution
 mpirun -allow-run-as-root -np $NUM_PROCESS --hostfile $HOSTFILE --map-by ppr:$PROCESSES_PER_NODE:node python parse_megatron.py
+
+# mpirun -allow-run-as-root -np 4 --hostfile ./hostfile --map-by ppr:4:node python parse_megatron.py

@@ -938,10 +938,12 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         # 初始化micro_batch_id列
         trace_df['micro_batch_id_forward'] = -1
         trace_df['micro_batch_id_backward'] = -1
-
+        # Todo: func name
         # 标记包含'recv_forward'和'recv_backward'的行
-        trace_df['recv_forward'] = trace_df['s_name'].str.contains('recv_forward').astype(int).cumsum() - 1
-        trace_df['recv_backward'] = trace_df['s_name'].str.contains('recv_backward').astype(int).cumsum() - 1
+        # trace_df['recv_forward'] = trace_df['s_name'].str.contains('recv_forward').astype(int).cumsum() - 1
+        # trace_df['recv_backward'] = trace_df['s_name'].str.contains('recv_backward').astype(int).cumsum() - 1
+        trace_df['recv_forward'] = trace_df['s_name'].str.contains('^megatron/core/pipeline_parallel/schedules.py\(\d+\): (recv_forward|send_backward_recv_forward)').astype(int).cumsum() - 1
+        trace_df['recv_backward'] = trace_df['s_name'].str.contains('^megatron/core/pipeline_parallel/schedules.py\(\d+\): (recv_backward|send_forward_recv_backward)').astype(int).cumsum() - 1
 
         # 更新'micro_batch_id_forward'和'micro_batch_id_backward'
         trace_df.loc[trace_df['s_name'].str.contains('forward'), 'micro_batch_id_forward'] = trace_df['recv_forward']
@@ -962,20 +964,29 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         trace_df.loc[trace_df['s_name'].str.contains('mccl:send(forward)', regex=False), 'send_next'] = trace_df['micro_batch_id_forward']
         trace_df.loc[trace_df['s_name'].str.contains('mccl:send(backward)', regex=False), 'send_prev'] = trace_df['micro_batch_id_backward']
     
+    # Todo: func name
     def process_pipeline_start_end(self, rank, df):
         if is_first_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
-            df.loc[df['s_name'].str.contains('recv_forward'), 'recv_prev'] = -1
-            df.loc[df['s_name'].str.contains('send_backward'), 'send_prev'] = -1
+            # df.loc[df['s_name'].str.contains('recv_forward'), 'recv_prev'] = -1
+            # df.loc[df['s_name'].str.contains('send_backward'), 'send_prev'] = -1
+            df.loc[df['s_name'].str.contains('megatron/core/pipeline_parallel/schedules.py(1537): recv_forward'), 'recv_prev'] = -1
+            df.loc[df['s_name'].str.contains('megatron/core/pipeline_parallel/schedules.py(1569): send_backward'), 'send_prev'] = -1
         if is_last_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
-            df.loc[df['s_name'].str.contains('recv_backward'), 'recv_next'] = -1
-            df.loc[df['s_name'].str.contains('send_forward'), 'send_next'] = -1
+            # df.loc[df['s_name'].str.contains('recv_backward'), 'recv_next'] = -1
+            # df.loc[df['s_name'].str.contains('send_forward'), 'send_next'] = -1
+            df.loc[df['s_name'].str.contains('megatron/core/pipeline_parallel/schedules.py(1548): recv_backward'), 'recv_next'] = -1
+            df.loc[df['s_name'].str.contains('megatron/core/pipeline_parallel/schedules.py(1559): send_forward'), 'send_next'] = -1
 
     def set_micro_batch_id(self):
         for rank in self.get_ranks():
             self.set_self_microbatch_id(self.traces[rank])
+            # self.traces[rank].to_csv(f'set-self-microbatch_id-{rank}_trace.csv')
             self.set_recv_send_microbatch_id(self.traces[rank])
+            # self.traces[rank].to_csv(f'set_recv_send_microbatch_id-{rank}_trace.csv')
             self.process_pipeline_start_end(rank, self.traces[rank])
+            # self.traces[rank].to_csv(f'process_pipeline_start_end-{rank}_trace.csv')
 
+    # Todo: func list
     def keep_useful_span(self, trace_df):
         user_annotation_names_list = [
             'warmup_state', 
@@ -990,13 +1001,13 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         python_function_names_list = [
             'megatron/core/pipeline_parallel/schedules.py(173): forward_step', 
             'megatron/core/pipeline_parallel/schedules.py(331): backward_step',
-            'megatron/core/pipeline_parallel/schedules.py(129): custom_backward',
+            # 'megatron/core/pipeline_parallel/schedules.py(129): custom_backward',
             'megatron/core/pipeline_parallel/schedules.py(1537): recv_forward', 
             'megatron/core/pipeline_parallel/schedules.py(1548): recv_backward', 
             'megatron/core/pipeline_parallel/schedules.py(1559): send_forward', 
             'megatron/core/pipeline_parallel/schedules.py(1569): send_backward', 
-            'megatron/core/pipeline_parallel/schedules.py(1579): send_forward_recv_backward', 
-            'send_backward_recv_forward',
+            'megatron/core/pipeline_parallel/schedules.py(1579): send_forward_recv_backward',
+            'megatron/core/pipeline_parallel/schedules.py(1596): send_backward_recv_forward',
             'megatron/core/pipeline_parallel/schedules.py(1613): forward_backward_pipelining_without_interleaving',
             'nn.Module: LanguageModelEmbedding_0',
             'nn.Module: TransformerLayer_',
@@ -1004,31 +1015,31 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             'nn.Module: MLASelfAttention_1',
             'megatron/core/fusions/fused_bias_dropout.py(42): _bias_dropout_add',
             'nn.Module: MoELayer_',
-            'RotaryEmbedding', 
-            'ParallelMLP',  
-            'ParallelTransformerLayer',
-            'ColumnParallelLinear', 
-            'RowParallelLinear', 
-            'FlashSelfAttention',
-            'MixedFusedLayerNorm',
-            'post_language_model_processing', 
-            'parallel_lm_logits', 
-            'vocab_parallel_cross_entropy', 
-            'average_losses_across_data_parallel_group',  
-            'apply_rotary_pos_emb',
-            'get_batch', 
-            'loss_func',
-            'step',
-            'reduce_model_grads',
-            'allreduce_layernorm_grads',
-            'allreduce_embedding_grads',
-            'allreduce_word_embedding_grads',
-            'allreduce_position_embedding_grads',
-            'gather_model_params',
-            '_copy_model_grads_to_main_grads',
-            '_unscale_main_grads_and_check_for_nan',
-            'clip_grad_norm',
-            '_copy_main_params_to_model_params'
+            # 'RotaryEmbedding', 
+            # 'ParallelMLP',  
+            # 'ParallelTransformerLayer',
+            # 'ColumnParallelLinear', 
+            # 'RowParallelLinear', 
+            # 'FlashSelfAttention',
+            # 'MixedFusedLayerNorm',
+            # 'post_language_model_processing', 
+            # 'parallel_lm_logits', 
+            # 'vocab_parallel_cross_entropy', 
+            # 'average_losses_across_data_parallel_group',  
+            # 'apply_rotary_pos_emb',
+            # 'get_batch', 
+            # 'loss_func',
+            'ProfilerStep',
+            # 'reduce_model_grads',
+            # 'allreduce_layernorm_grads',
+            # 'allreduce_embedding_grads',
+            # 'allreduce_word_embedding_grads',
+            # 'allreduce_position_embedding_grads',
+            # 'gather_model_params',
+            # '_copy_model_grads_to_main_grads',
+            # '_unscale_main_grads_and_check_for_nan',
+            # 'clip_grad_norm',
+            # '_copy_main_params_to_model_params'
         ]
         
         cpu_op_names_list = [
@@ -1047,34 +1058,44 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         filter_user_annotation = NameFilter(create_regex_for_prefix_match(user_annotation_names_list))
         filter_python_function = NameFilter(create_regex_for_prefix_match(python_function_names_list))
         filter_cpu_op = NameFilter(create_regex_for_prefix_match(cpu_op_names_list))
-        
         trace_df_user_annotation = filter_user_annotation(trace_df[trace_df['s_cat'] == 'user_annotation'])
         trace_df_python_function = filter_python_function(trace_df[trace_df['s_cat'] == 'python_function'])
         trace_df_cpu_op = filter_cpu_op(trace_df[trace_df['s_cat'] == 'cpu_op'])
-        
         trace_df = pd.concat([trace_df_user_annotation, trace_df_python_function, trace_df_cpu_op])
-        
         return trace_df
     
+    # Todo: func list
     def keep_comm_span_only(self, trace_df):
         comm_names_list = [
-            'forward_step', 
-            'backward_step', 
-            'recv_forward', 
-            'recv_backward', 
-            'send_forward', 
-            'send_backward', 
-            'send_forward_recv_backward', 
-            'send_backward_recv_forward', 
+            # 'forward_step', 
+            # 'backward_step', 
+            # 'recv_forward', 
+            # 'recv_backward', 
+            # 'send_forward', 
+            # 'send_backward', 
+            'megatron/core/pipeline_parallel/schedules.py(173): forward_step', 
+            'megatron/core/pipeline_parallel/schedules.py(331): backward_step',
+            'megatron/core/pipeline_parallel/schedules.py(129): custom_backward',
+            'megatron/core/pipeline_parallel/schedules.py(1537): recv_forward', 
+            'megatron/core/pipeline_parallel/schedules.py(1548): recv_backward', 
+            'megatron/core/pipeline_parallel/schedules.py(1559): send_forward', 
+            'megatron/core/pipeline_parallel/schedules.py(1569): send_backward', 
+            # 'send_forward_recv_backward', 
+            # 'send_backward_recv_forward', 
+            'megatron/core/pipeline_parallel/schedules.py(1579): send_forward_recv_backward',
+            'megatron/core/pipeline_parallel/schedules.py(1596): send_backward_recv_forward',
             'mccl:send', 
             'mccl:recv', 
-            'reduce_model_grads',
-            'step',
-            'gather_model_params',
-            '_copy_model_grads_to_main_grads',
-            '_unscale_main_grads_and_check_for_nan',
-            'clip_grad_norm',
-            '_copy_main_params_to_model_params',
+            # 'reduce_model_grads',
+            # 'step',
+            'ProfilerStep',
+            # 'gather_model_params',
+            # '_copy_model_grads_to_main_grads',
+            'megatron/core/optimizer/distrib_optimizer.py(1917): _copy_model_grads_to_main_grads',
+            # '_unscale_main_grads_and_check_for_nan',
+            # 'clip_grad_norm',
+            # '_copy_main_params_to_model_params',
+            'megatron/core/optimizer/distrib_optimizer.py(1960): _copy_main_params_to_model_params',
             # 'mccl:all_reduce'
         ]
         filter_comm = NameFilter(create_regex_for_prefix_match(comm_names_list))
@@ -1108,10 +1129,12 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         # Get the DataFrames for the given ranks
         trace_df_prev = self.traces[rank_prev]
         trace_df_next = self.traces[rank_next]
-        
+        trace_df_prev.to_csv(f"rank_prev_{rank_prev}_trace.csv", index=False)
+        trace_df_next.to_csv(f"rank_next_{rank_next}_trace.csv", index=False)
         useful_trace_df_prev = self.get_useful_trace_df(trace_df_prev)
         useful_trace_df_next = self.get_useful_trace_df(trace_df_next)
-
+        useful_trace_df_prev.to_csv(f"rank_prev_{rank_prev}_useful_trace.csv", index=False)
+        useful_trace_df_next.to_csv(f"rank_next_{rank_next}_useful_trace.csv", index=False)
         # Compute forward P2P communication times
         df_p2p_forward = self._compute_p2p_forward(useful_trace_df_prev, useful_trace_df_next)
         self._update_comm_time(trace_df_prev, df_p2p_forward, 'send_next', 'send_next_on_prev')

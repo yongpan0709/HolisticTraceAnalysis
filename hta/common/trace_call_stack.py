@@ -1047,20 +1047,23 @@ class CallStackGraph:
         # Determine the new s_name based on the operation type and parent's context
         if parent_name is not None:
             if node_name in 'mccl:send':
+                # print(f"node_name={node_name}, parent_name={parent_name}")
                 if 'send_forward' in parent_name:
                     new_name = node_name + '(forward)'
+                    self.set_node_data_by_id(node_index, 's_name', new_name)
                 elif 'send_backward' in parent_name:
                     new_name = node_name + '(backward)'
+                    self.set_node_data_by_id(node_index, 's_name', new_name)
                 # self.df.loc[self.df['index'] == node_index, 's_name'] = new_name
-                self.set_node_data_by_id(node_index, 's_name', new_name)
+                # self.set_node_data_by_id(node_index, 's_name', new_name)
             elif node_name in 'mccl:recv':
                 if 'recv_forward' in parent_name:
                     new_name = node_name + '(forward)'
+                    self.set_node_data_by_id(node_index, 's_name', new_name)    
                 elif 'recv_backward' in parent_name:
                     new_name = node_name + '(backward)'
+                    self.set_node_data_by_id(node_index, 's_name', new_name)
                 # self.df.loc[self.df['index'] == node_index, 's_name'] = new_name
-                self.set_node_data_by_id(node_index, 's_name', new_name)
-        
         # Recursively apply this method to all children
         for child_index in node.children:
             self.mark_send_recv_direction(child_index, parent_name=node_name)

@@ -753,7 +753,7 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         self.t = MegatronPipelineParrallelGroupTrace(trace_files, trace_dir, data_parallel_size, tensor_parallel_size, pipeline_parallel_size)
         self.t.load_traces(include_last_profiler_step)
         self.with_gpu_kernel = self.t.with_gpu_kernel
-        self.t.decode_symbol_ids()
+        self.t.decode_symbol_ids(use_shorten_name=False)
         assert self.t.is_parsed is True
         self.output_dir = os.path.join(trace_dir, 'output')
         prepare_directory(self.output_dir, force_clear=True)
@@ -773,14 +773,23 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         call_graph.print_call_graph(f'{self.output_dir}/init_graph.txt')
         
         target_duplicate_name_list = [
-            'forward_step',
-            'bakcward_step',
-            'send_forward_recv_backward',
-            'send_backward_recv_forward',
-            'recv_forward',
-            'recv_backward',
-            'send_forward',
-            'send_backward'
+            # 'forward_step',
+            'megatron/core/pipeline_parallel/schedules.py(173): forward_step', 
+            # 'bakcward_step',
+            'megatron/core/pipeline_parallel/schedules.py(331): backward_step',
+            # 'send_forward_recv_backward', 
+            'megatron/core/pipeline_parallel/schedules.py(1579): send_forward_recv_backward', 
+            # 'send_backward_recv_forward',
+            'megatron/core/pipeline_parallel/schedules.py(1596): send_backward_recv_forward',
+            # 'megatron/core/pipeline_parallel/schedules.py(129): custom_backward',
+            # 'recv_forward',
+            # 'recv_backward',
+            # 'send_forward',
+            # 'send_backward'
+            'megatron/core/pipeline_parallel/schedules.py(1537): recv_forward', 
+            'megatron/core/pipeline_parallel/schedules.py(1548): recv_backward', 
+            'megatron/core/pipeline_parallel/schedules.py(1559): send_forward', 
+            'megatron/core/pipeline_parallel/schedules.py(1569): send_backward', 
         ]
         
         logger.info('eliminate_duplicate_named_children')
@@ -800,11 +809,9 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         # call_graph.print_call_graph(f'{self.output_dir}/assign_full_names.txt')
                 
         self.t.traces = call_graph.trace_data.traces
-        
         logger.info('keep comm spans only')
         self.t.traces_comm_only = self.t.parallel_apply(self.t.keep_comm_span_only)
         self.t.display_traces_info(self.t.traces_comm_only)
-        
         logger.info('set_micro_batch_id')
         self.t.set_micro_batch_id() 
         # self.t.save_traces(f'{self.output_dir}/set_micro_batch_id.json')
@@ -834,10 +841,14 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         for stage_id, rank in enumerate(sorted(self.t.traces_comm_only.keys())):
             trace_df = self.t.traces[rank]
             sorted_trace_df = self._preprocess_trace_df(trace_df)
+            # sorted_trace_df.to_csv(f'after-gen-sorted_trace_df_rank-{rank}.csv')
 
             time_per_batch = self._calculate_time_per_batch(sorted_trace_df)
-            all_forward_steps_df = NameFilter(create_regex_for_prefix_match(['forward_step']))(sorted_trace_df)
-            all_backward_steps_df = NameFilter(create_regex_for_prefix_match(['backward_step']))(sorted_trace_df)
+            # Todo: func name
+            # all_forward_steps_df = NameFilter(create_regex_for_prefix_match(['forward_step']))(sorted_trace_df)
+            # all_backward_steps_df = NameFilter(create_regex_for_prefix_match(['backward_step']))(sorted_trace_df)
+            all_forward_steps_df = NameFilter(create_regex_for_prefix_match(['megatron/core/pipeline_parallel/schedules.py(173): forward_step']))(sorted_trace_df)
+            all_backward_steps_df = NameFilter(create_regex_for_prefix_match(['megatron/core/pipeline_parallel/schedules.py(331): backward_step']))(sorted_trace_df)
             forward_step_time, backward_step_time, compute_time_total = self._calculate_step_times(all_forward_steps_df, all_backward_steps_df)
 
             all_send_df = NameFilter(create_regex_for_prefix_match(['mccl:send']))(sorted_trace_df)
@@ -847,7 +858,6 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
             bubble_time_head = self._calculate_bubble_time_head(stage_id, all_recv_df)
             bubble_time_middle = self._calculate_bubble_time_middle(stage_id, all_send_df, all_recv_df)
             bubble_time_tail = self._calculate_bubble_time_tail(stage_id, all_recv_df)
-
             bubble_time_final, first_stage_optimizer_step = self._calculate_optimizer_step_time_and_bubble(sorted_trace_df, first_stage_optimizer_step)
             bubble_time_total = bubble_time_head + bubble_time_middle + bubble_time_tail + bubble_time_final
             comm_time_total += bubble_time_final
@@ -889,16 +899,18 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
             output_df.to_csv(save_path, header=True, index=False)
         return output_df
 
+    # Todo: 'reduce_model_grads', 'step_', 'gather_model_params' 
     def _calculate_optimizer_time(self, sorted_trace_df, bubble_time_final):
         optimizer_df = NameFilter(create_regex_for_prefix_match(['reduce_model_grads', 'step_', 'gather_model_params']))(sorted_trace_df)
         optimizer_time = optimizer_df['dur'].sum()
         return optimizer_time - bubble_time_final
     
+    # Todo: func name
     def _preprocess_trace_df(self, trace_df):
         sorted_trace_df = trace_df.sort_values(by=['ts', 'dur'], ascending=[True, False])
         
         # Use regex to find the first occurrence of any 'recv_forward*' event
-        recv_forward_index = sorted_trace_df[sorted_trace_df['s_name'].str.contains(r'^recv_forward.*')].index
+        recv_forward_index = sorted_trace_df[sorted_trace_df['s_name'].str.contains(r'^megatron/core/pipeline_parallel/schedules.py\(\d+\): recv_forward.*')].index
         first_recv_forward_index = recv_forward_index[0]
         # Keep only the rows from the first 'recv_forward*' event onwards
         sorted_trace_df = sorted_trace_df.loc[first_recv_forward_index:]
@@ -951,9 +963,13 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         all_recv_df.loc[end_recv_index, 'wait_time'] = 0
         return bubble_time_tail
 
+    # Todo: func name
+    #       sorted_trace_df[sorted_trace_df['full_name'].str.contains(pattern, regex=True)]['dur'].values[0]   why use the first value
     def _calculate_optimizer_step_time_and_bubble(self, sorted_trace_df, first_stage_optimizer_step_time):
         # Use regex to match 'full_name' with the pattern '?ProfilerStep?/step?'
-        pattern = r'.*ProfilerStep.*/step.*'
+        # Todo: func name
+        # pattern = r'.*ProfilerStep.*/step.*'
+        pattern = r'.*ProfilerStep.*/Optimizer.step#FusedAdam.step.*'
         optimizer_step_time = sorted_trace_df[sorted_trace_df['full_name'].str.contains(pattern, regex=True)]['dur'].values[0]
         if first_stage_optimizer_step_time is None:
             first_stage_optimizer_step_time = optimizer_step_time

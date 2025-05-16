@@ -994,9 +994,9 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             'cooldown_state', 
             'mccl:', 
             'ProfilerStep', 
-            'backward_step',
-            'forward_step',
-            'Optimizer.step#FusedAdam.step',
+            # 'backward_step',
+            # 'forward_step',
+            # 'Optimizer.step#FusedAdam.step',
         ]
         python_function_names_list = [
             'megatron/core/pipeline_parallel/schedules.py(173): forward_step', 
@@ -1127,12 +1127,12 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         # Get the DataFrames for the given ranks
         trace_df_prev = self.traces[rank_prev]
         trace_df_next = self.traces[rank_next]
-        trace_df_prev.to_csv(f"rank_prev_{rank_prev}_trace.csv", index=False)
-        trace_df_next.to_csv(f"rank_next_{rank_next}_trace.csv", index=False)
+        # trace_df_prev.to_csv(f"rank_prev_{rank_prev}_trace.csv", index=False)
+        # trace_df_next.to_csv(f"rank_next_{rank_next}_trace.csv", index=False)
         useful_trace_df_prev = self.get_useful_trace_df(trace_df_prev)
         useful_trace_df_next = self.get_useful_trace_df(trace_df_next)
-        useful_trace_df_prev.to_csv(f"rank_prev_{rank_prev}_useful_trace.csv", index=False)
-        useful_trace_df_next.to_csv(f"rank_next_{rank_next}_useful_trace.csv", index=False)
+        # useful_trace_df_prev.to_csv(f"rank_prev_{rank_prev}_useful_trace.csv", index=False)
+        # useful_trace_df_next.to_csv(f"rank_next_{rank_next}_useful_trace.csv", injdex=False)
         # Compute forward P2P communication times
         df_p2p_forward = self._compute_p2p_forward(useful_trace_df_prev, useful_trace_df_next)
         self._update_comm_time(trace_df_prev, df_p2p_forward, 'send_next', 'send_next_on_prev')

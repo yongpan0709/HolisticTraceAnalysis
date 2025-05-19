@@ -2,8 +2,7 @@ from pathlib import Path
 from hta.common.trace import Trace
 from hta.configs.config import logger
 from hta.configs.parser_config import  ParserConfig, AVAILABLE_ARGS
-from hta.common.trace_call_graph import CallGraph
-from hta.common.call_stack import CallStackIdentity
+from hta.common.trace_call_graph import CallGraph, CallStackIdentity
 from collections import defaultdict
 from typing import Dict, List, Set
 import numpy as np
@@ -19,7 +18,7 @@ def set_pandas_display_options():
     pd.set_option("display.float_format", "{:.2f}".format)
 
 
-def get_backward_duration(df, forward_index): 
+def get_backward_duration(df, cg, forward_index): 
     # forward_index  = df[df['name'] == forward_sym_id].index
     forward_children_with_bwd_id: Dict[np.int64, List[np.int64]] = defaultdict(list)
     """
@@ -31,7 +30,10 @@ def get_backward_duration(df, forward_index):
         while len(parents) > 0:
             parent = parents.popleft()
             # print(f"parent: {parent}")
-            for child in df[df['parent'] == parent].index:
+            # for child in df[df['parent'] == parent].index:
+            parent_callStackNode = cg.rank_to_nodes[0].get(parent)
+            for child in parent_callStackNode.children:
+                # print(f"child: {child}")
                 child_fwdbwd_index = df.loc[child, 'fwdbwd_index']
                 if child_fwdbwd_index > 0:
                     child_fwdbwd_num_kernels = df.loc[child_fwdbwd_index, 'num_kernels']
@@ -93,7 +95,7 @@ def extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name):
 
 if __name__ == "__main__":
     base_dir = "../"
-    trace_dir = str(Path(base_dir).joinpath("ds-0405"))
+    trace_dir = str(Path(base_dir).joinpath("ds-count-2"))
     cfg = ParserConfig.get_default_cfg()
     # config for extracting shape info
     cfg.add_args(ParserConfig.ARGS_INPUT_SHAPE)
@@ -136,7 +138,7 @@ if __name__ == "__main__":
             return row['mean']/fwd_total_dur_mean
     stat_info_funcs_grouped['mean_percent'] = stat_info_funcs_grouped.apply(lambda row: cal_dur_percent(row, fwd_total_dur_mean, bwd_total_dur_mean), axis=1)
 
-    stat_info_funcs_grouped.to_csv('profile-0413-update.csv')
+    # stat_info_funcs_grouped.to_csv('profile-0413-update.csv')
     shape_info = extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name)
     for forward_func_name, func_ancestors in func_name:
         if forward_func_name.split('@')[0] in need_shape_func_name:

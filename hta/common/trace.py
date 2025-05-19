@@ -996,12 +996,10 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             'ProfilerStep', 
             # 'backward_step',
             # 'forward_step',
-            # 'Optimizer.step#FusedAdam.step',
         ]
         python_function_names_list = [
             'megatron/core/pipeline_parallel/schedules.py(173): forward_step', 
             'megatron/core/pipeline_parallel/schedules.py(331): backward_step',
-            # 'megatron/core/pipeline_parallel/schedules.py(129): custom_backward',
             'megatron/core/pipeline_parallel/schedules.py(1537): recv_forward', 
             'megatron/core/pipeline_parallel/schedules.py(1548): recv_backward', 
             'megatron/core/pipeline_parallel/schedules.py(1559): send_forward', 

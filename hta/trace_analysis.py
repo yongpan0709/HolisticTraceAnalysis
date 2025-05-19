@@ -901,7 +901,7 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
 
     # Todo: 'reduce_model_grads', 'step_', 'gather_model_params' 
     def _calculate_optimizer_time(self, sorted_trace_df, bubble_time_final):
-        optimizer_df = NameFilter(create_regex_for_prefix_match(['reduce_model_grads', 'step_', 'gather_model_params']))(sorted_trace_df)
+        optimizer_df = NameFilter(create_regex_for_prefix_match(['megatron/core/distributed/finalize_model_grads.py(250): finalize_model_grads', 'megatron/core/optimizer/optimizer.py(1040): step', 'megatron/core/optimizer/distrib_optimizer.py(2114): step_with_ready_grads']))(sorted_trace_df)(sorted_trace_df)
         optimizer_time = optimizer_df['dur'].sum()
         return optimizer_time - bubble_time_final
     
@@ -969,7 +969,7 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         # Use regex to match 'full_name' with the pattern '?ProfilerStep?/step?'
         # Todo: func name
         # pattern = r'.*ProfilerStep.*/step.*'
-        pattern = r'.*ProfilerStep.*/Optimizer.step#FusedAdam.step.*'
+        pattern = r'.*ProfilerStep.*/megatron/core/optimizer/optimizer.py\(\d+\): step.*'
         optimizer_step_time = sorted_trace_df[sorted_trace_df['full_name'].str.contains(pattern, regex=True)]['dur'].values[0]
         if first_stage_optimizer_step_time is None:
             first_stage_optimizer_step_time = optimizer_step_time

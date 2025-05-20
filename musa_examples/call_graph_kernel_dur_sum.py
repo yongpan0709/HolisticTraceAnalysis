@@ -48,8 +48,8 @@ def get_backward_duration(df, cg, forward_index):
         bwd_children = df[df['index'].isin(bwd_children_indices)]
         first_kernel_start = bwd_children['first_kernel_start'].min()
         last_kernel_end = bwd_children['last_kernel_end'].max()
-        backward_info[forward_as_parent] = (last_kernel_end - first_kernel_start)/1000.0
-    backward_stat_info = pd.DataFrame.from_dict(backward_info, orient='index', columns=['kernel_dur_sum'])
+        backward_info[forward_as_parent] = (last_kernel_end - first_kernel_start)
+    backward_stat_info = pd.DataFrame.from_dict(backward_info, orient='index', columns=['kernel_span'])
     return backward_stat_info
 
 def get_forward_duration_uniq(df, forward_func_name):
@@ -67,9 +67,8 @@ def get_forward_duration_dup(df, forward_func_name, func_ancestors, cg, func_map
     # print("dup node index: ", node_index)
     return df[df['index'].isin(node_index)]
 
-def calculate_statistics(df: pd.DataFrame, func_name: str, calculate_col_name: str, fwd_bwd: str = 'fwd'):
-    if fwd_bwd == 'fwd':
-        df[calculate_col_name] = df[calculate_col_name]/1000.0
+def calculate_statistics(df: pd.DataFrame, func_name: str, calculate_col_name: str = 'kernel_span'): #, fwd_bwd: str = 'fwd'):
+    df[calculate_col_name] = df[calculate_col_name]/1000.0
     df_dur = pd.DataFrame({
                         'mean': df[calculate_col_name].mean(),
                         'q_25': df[calculate_col_name].quantile(.25),
@@ -123,10 +122,10 @@ if __name__ == "__main__":
         else:
             fwd_df = get_forward_duration_dup(df, forward_func_name.split('@')[0], func_ancestors, cg, func_mapping_node_index)
         assert len(fwd_df) != 0, "forward_func_name no data: " + forward_func_name
-        fwd_dur = calculate_statistics(fwd_df, forward_func_name, 'kernel_span')
+        fwd_dur = calculate_statistics(fwd_df, forward_func_name) 
         func_mapping_node_index[forward_func_name] = fwd_df.index
         bwd_df = get_backward_duration(df, cg, fwd_df.index)
-        bwd_dur = calculate_statistics(bwd_df, forward_func_name+'-bwd', 'kernel_dur_sum', 'bwd')
+        bwd_dur = calculate_statistics(bwd_df, forward_func_name+'-bwd') 
         stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, fwd_dur, bwd_dur], axis=0)
 
     shape_info = extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name)

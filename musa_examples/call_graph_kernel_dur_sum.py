@@ -28,20 +28,20 @@ def get_backward_duration(df, cg, forward_index):
         parents = deque()
         parents.append(forward_as_parent)
         while len(parents) > 0:
-            parent = parents.popleft()
-            # print(f"parent: {parent}")
-            # for child in df[df['parent'] == parent].index:
-            parent_callStackNode = cg.rank_to_nodes[0].get(parent)
-            for child in parent_callStackNode.children:
-                # print(f"child: {child}")
-                child_fwdbwd_index = df.loc[child, 'fwdbwd_index']
-                if child_fwdbwd_index > 0:
-                    child_fwdbwd_num_kernels = df.loc[child_fwdbwd_index, 'num_kernels']
-                    if child_fwdbwd_num_kernels > 0:
-                        forward_children_with_bwd_id[forward_as_parent].append(child_fwdbwd_index)
-                child_type = df.loc[child, 's_cat']
-                if child_type not in ['kernel']:
-                    parents.append(child)
+            cur_node = parents.popleft()
+            cur_node_fwdbwd_index = df.loc[cur_node, 'fwdbwd_index']
+            if cur_node_fwdbwd_index > 0:
+                cur_node_fwdbwd_num_kernels = df.loc[cur_node_fwdbwd_index, 'num_kernels']
+                if cur_node_fwdbwd_num_kernels > 0:
+                    forward_children_with_bwd_id[forward_as_parent].append(cur_node_fwdbwd_index)
+            else:
+                cur_callStackNode = cg.rank_to_nodes[0].get(cur_node)
+                cur_node_children = cur_callStackNode.children
+                if len(cur_node_children) > 0:
+                    for child in cur_node_children:
+                        child_type = df.loc[child, 's_cat']
+                        if child_type not in ['kernel']:
+                            parents.append(child)
     
     backward_info: Dict[np.int64, np.float64] = defaultdict(np.float64)
     for forward_as_parent, bwd_children_indices in forward_children_with_bwd_id.items():
@@ -94,8 +94,9 @@ def extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name):
     return shape_info
 
 if __name__ == "__main__":
+    import time
     base_dir = "../"
-    trace_dir = str(Path(base_dir).joinpath("ds-count-2"))
+    trace_dir = str(Path(base_dir).joinpath("ds-0515"))
     cfg = ParserConfig.get_default_cfg()
     # config for extracting shape info
     cfg.add_args(ParserConfig.ARGS_INPUT_SHAPE)
@@ -106,7 +107,10 @@ if __name__ == "__main__":
     # name and cat are kernel id
     t.decode_symbol_ids(use_shorten_name=False)
     set_pandas_display_options()
+    t0 = time.perf_counter()
     cg = CallGraph(t, ranks=[0])
+    t1 = time.perf_counter()
+    print(f"CallGraph took {t1 - t0:.2f} seconds")
     df = cg.call_stacks[0].full_df
     dup_func_name, need_shape_func_name = extract_dup_or_shape_func_name_from_template(output_template_to_file)
     func_name = extract_func_name_from_template(output_template_to_file)
@@ -121,7 +125,7 @@ if __name__ == "__main__":
         assert len(fwd_df) != 0, "forward_func_name no data: " + forward_func_name
         fwd_dur = calculate_statistics(fwd_df, forward_func_name, 'kernel_span')
         func_mapping_node_index[forward_func_name] = fwd_df.index
-        bwd_df = get_backward_duration(df, fwd_df.index)
+        bwd_df = get_backward_duration(df, cg, fwd_df.index)
         bwd_dur = calculate_statistics(bwd_df, forward_func_name+'-bwd', 'kernel_dur_sum', 'bwd')
         stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, fwd_dur, bwd_dur], axis=0)
 

@@ -57,12 +57,12 @@ def get_forward_duration_uniq(df, forward_func_name):
     node_index = df[df['s_name'].str.match(pat=r"^"+forward_func_name+r"$")].index
     return df[df['index'].isin(node_index)]
 
-def get_forward_duration_dup(df, forward_func_name, func_ancestors, cg, func_mapping_node_index):
+def get_forward_duration_dup(df, forward_func_name, func_ancestors, cg, rank, func_mapping_node_index):
     node_index: List[np.int64] = []
     nearest_ancestor_index = func_mapping_node_index[func_ancestors[-1]]
     for index, row in df[df['s_name'].str.match(pat=r"^"+forward_func_name+r"$")].iterrows():
         pid, tid = row['pid'], row['tid']
-        path_to_root = cg.rank_to_stacks[0][CallStackIdentity(0, pid, tid)].get_path_to_root(index)
+        path_to_root = cg.rank_to_stacks[rank][CallStackIdentity(rank, pid, tid)].get_path_to_root(index)
         if len(set(path_to_root).intersection(set(nearest_ancestor_index))) > 0:
             node_index.append(index)
     # print("dup node index: ", node_index)
@@ -102,7 +102,7 @@ def cal_dur_percent(row, fwd_total_dur_mean, bwd_total_dur_mean):
 if __name__ == "__main__":
     import time
     base_dir = "../"
-    trace_dir = str(Path(base_dir).joinpath("ds-count2-tp1-pp2-dp4/iteration_4/"))
+    trace_dir = str(Path(base_dir).joinpath("ds-0627"))
     cfg = ParserConfig.get_default_cfg()
     # config for extracting shape info
     cfg.add_args(ParserConfig.ARGS_INPUT_SHAPE)

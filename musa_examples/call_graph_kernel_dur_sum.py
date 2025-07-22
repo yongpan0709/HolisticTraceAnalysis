@@ -86,6 +86,8 @@ def extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name):
     for forward_func_name, _ in func_name:
         if forward_func_name.split('@')[0] in need_shape_func_name:
             func_index = func_mapping_node_index[forward_func_name]
+            if len(func_index) == 0:
+                continue
             shape_array = []
             for index, row in df[df.index.isin(func_index)].iterrows(): 
                 shape_array.append(row['input_dims'][0][0])
@@ -119,7 +121,7 @@ if __name__ == "__main__":
         cg = CallGraph(t)
         t1 = time.perf_counter()
         print(f"Rank {rank}, CallGraph took {t1 - t0:.2f} seconds")
-        df = cg.call_stacks[rank].full_df
+        df = cg.call_stacks[-1].full_df
         dup_func_name, need_shape_func_name = extract_dup_or_shape_func_name_from_template(output_template_to_file)
         func_name = extract_func_name_from_template(output_template_to_file)
         stat_info_funcs_grouped = pd.DataFrame()
@@ -150,20 +152,22 @@ if __name__ == "__main__":
         with open(f"./call_graph_duration_{rank}.txt", "w") as f:
             for forward_func_name, func_ancestors in func_name:
                 if forward_func_name.split('@')[0] in need_shape_func_name:
-                    assert len(shape_info[forward_func_name]['example']) >= SHAPE_POSITION[forward_func_name.split('@')[0]], "No shape info of func name:" + forward_func_name 
-                    shape_dim = shape_info[forward_func_name]['example'][:SHAPE_POSITION[forward_func_name.split('@')[0]]]
-                    shape_dim[0][0] = int(shape_info[forward_func_name]['data'].mean())
-                    if SHAPE_POSITION[forward_func_name.split('@')[0]] == 2:
-                        dims = set({shape_dim[0][0], shape_dim[0][1], shape_dim[1][0], shape_dim[1][1]})
-                        m,n,k = dims
-                        mfu = 2*m*n*k/stat_info_funcs_grouped.loc[forward_func_name,"mean"]*1000/(1e12)/458
-                        print(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}, mfu: {mfu:.3f}')
-                        f.write(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}, mfu: {mfu:.3f}\n')
+                    if len(shape_info[forward_func_name]['example']) >= SHAPE_POSITION[forward_func_name.split('@')[0]]:
+                        shape_dim = shape_info[forward_func_name]['example'][:SHAPE_POSITION[forward_func_name.split('@')[0]]]
+                        shape_dim[0][0] = int(shape_info[forward_func_name]['data'].mean())
+                        if SHAPE_POSITION[forward_func_name.split('@')[0]] == 2:
+                            dims = set({shape_dim[0][0], shape_dim[0][1], shape_dim[1][0], shape_dim[1][1]})
+                            m,n,k = dims
+                            mfu = 2*m*n*k/stat_info_funcs_grouped.loc[forward_func_name,"mean"]*1000/(1e12)/458
+                            print(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}, mfu: {mfu:.3f}')
+                            f.write(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}, mfu: {mfu:.3f}\n')
+                        else:
+                            m,n = shape_dim[0]
+                            bw_usage = 2*m*n/stat_info_funcs_grouped.loc[forward_func_name,"mean"]*1000/(1024**3)
+                            print(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}, bw_usage: {bw_usage:.3f}')
+                            f.write(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}, bw_usage: {bw_usage:.3f}\n')
                     else:
-                        m,n = shape_dim[0]
-                        bw_usage = 2*m*n/stat_info_funcs_grouped.loc[forward_func_name,"mean"]*1000/(1024**3)
-                        print(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}, bw_usage: {bw_usage:.3f}')
-                        f.write(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}, bw_usage: {bw_usage:.3f}\n')
+                        print(f"No shape info of func name: {forward_func_name}")
                 else:
                     print(f'{"    " * len(func_ancestors)}{forward_func_name}')
                     f.write(f'{"    " * len(func_ancestors)}{forward_func_name}\n')

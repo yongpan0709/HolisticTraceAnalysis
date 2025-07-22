@@ -129,7 +129,7 @@ if __name__ == "__main__":
             if forward_func_name.split('@')[0] not in dup_func_name:
                 fwd_df = get_forward_duration_uniq(df, forward_func_name.split('@')[0])
             else:
-                fwd_df = get_forward_duration_dup(df, forward_func_name.split('@')[0], func_ancestors, cg, func_mapping_node_index)
+                fwd_df = get_forward_duration_dup(df, forward_func_name.split('@')[0], func_ancestors, cg, rank, func_mapping_node_index)
             if len(fwd_df) == 0:
                 print(f"forward_func_name no data: {forward_func_name}")
                 continue

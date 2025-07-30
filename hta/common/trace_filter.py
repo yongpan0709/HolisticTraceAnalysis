@@ -248,7 +248,8 @@ def create_regex_for_prefix_match(prefixes):
     # Escape each prefix to handle special regex characters
     escaped_prefixes = [re.escape(prefix) for prefix in prefixes]
     # Join the escaped prefixes with the regex OR operator '|'
-    name_pattern = '^(' + '|'.join(escaped_prefixes) + ')'
+    # name_pattern = '^(' + '|'.join(escaped_prefixes) + ')'
+    name_pattern = '^(' + '|'.join(prefixes) + ')'
     return name_pattern
 
 class NameIdColumnFilter(Filter):

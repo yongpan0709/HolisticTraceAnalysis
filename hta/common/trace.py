@@ -969,13 +969,13 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         if is_first_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
             # df.loc[df['s_name'].str.contains('recv_forward'), 'recv_prev'] = -1
             # df.loc[df['s_name'].str.contains('send_backward'), 'send_prev'] = -1
-            df.loc[df['s_name'].str.contains('megatron/core/pipeline_parallel/schedules.py(1537): recv_forward'), 'recv_prev'] = -1
-            df.loc[df['s_name'].str.contains('megatron/core/pipeline_parallel/schedules.py(1569): send_backward'), 'send_prev'] = -1
+            df.loc[df['s_name'].str.contains(r'megatron/core/pipeline_parallel/schedules.py\(\d+\): recv_forward', regex=True), 'recv_prev'] = -1
+            df.loc[df['s_name'].str.contains(r'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_backward', regex=True), 'send_prev'] = -1
         if is_last_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
             # df.loc[df['s_name'].str.contains('recv_backward'), 'recv_next'] = -1
             # df.loc[df['s_name'].str.contains('send_forward'), 'send_next'] = -1
-            df.loc[df['s_name'].str.contains('megatron/core/pipeline_parallel/schedules.py(1548): recv_backward'), 'recv_next'] = -1
-            df.loc[df['s_name'].str.contains('megatron/core/pipeline_parallel/schedules.py(1559): send_forward'), 'send_next'] = -1
+            df.loc[df['s_name'].str.contains(r'megatron/core/pipeline_parallel/schedules.py\(\d+\): recv_backward', regex=True), 'recv_next'] = -1
+            df.loc[df['s_name'].str.contains(r'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_forward', regex=True), 'send_next'] = -1
 
     def set_micro_batch_id(self):
         for rank in self.get_ranks():
@@ -998,20 +998,22 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             # 'forward_step',
         ]
         python_function_names_list = [
-            'megatron/core/pipeline_parallel/schedules.py(173): forward_step', 
-            'megatron/core/pipeline_parallel/schedules.py(331): backward_step',
-            'megatron/core/pipeline_parallel/schedules.py(1537): recv_forward', 
-            'megatron/core/pipeline_parallel/schedules.py(1548): recv_backward', 
-            'megatron/core/pipeline_parallel/schedules.py(1559): send_forward', 
-            'megatron/core/pipeline_parallel/schedules.py(1569): send_backward', 
-            'megatron/core/pipeline_parallel/schedules.py(1579): send_forward_recv_backward',
-            'megatron/core/pipeline_parallel/schedules.py(1596): send_backward_recv_forward',
-            'megatron/core/pipeline_parallel/schedules.py(1613): forward_backward_pipelining_without_interleaving',
+            # 'megatron/core/pipeline_parallel/schedules.py\(\d+\): forward_step', 
+            'musa_patch/core_pipeline_parallel_schedules.py\(\d+\): forward_step',
+            # 'megatron/core/pipeline_parallel/schedules.py\(\d+\): backward_step',
+            'musa_patch/core_pipeline_parallel_schedules.py\(\d+\): backward_step',
+            'megatron/core/pipeline_parallel/schedules.py\(\d+\): recv_forward', 
+            'megatron/core/pipeline_parallel/schedules.py\(\d+\): recv_backward', 
+            'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_forward', 
+            'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_backward', 
+            'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_forward_recv_backward',
+            'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_backward_recv_forward',
+            'megatron/core/pipeline_parallel/schedules.py\(\d+\): forward_backward_pipelining_without_interleaving',
             'nn.Module: LanguageModelEmbedding_0',
             'nn.Module: TransformerLayer_',
             'nn.Module: RMSNorm_',
             'nn.Module: MLASelfAttention_1',
-            'megatron/core/fusions/fused_bias_dropout.py(42): _bias_dropout_add',
+            'megatron/core/fusions/fused_bias_dropout.py\(\d+\): _bias_dropout_add',
             'nn.Module: MoELayer_',
             # 'RotaryEmbedding', 
             # 'ParallelMLP',  
@@ -1027,17 +1029,17 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             # 'apply_rotary_pos_emb',
             # 'get_batch', 
             # 'loss_func',
-            'megatron/core/optimizer/optimizer.py(1040): step',
-            'megatron/core/distributed/finalize_model_grads.py(250): finalize_model_grads',
-            'megatron/core/distributed/finalize_model_grads.py(184): _allreduce_layernorm_grads',
-            'megatron/core/distributed/finalize_model_grads.py(176): _allreduce_embedding_grads',
-            'megatron/core/distributed/finalize_model_grads.py(119): _allreduce_word_embedding_grads',
-            'megatron/core/distributed/finalize_model_grads.py(149): _allreduce_position_embedding_grads',
-            'megatron/core/optimizer/distrib_optimizer.py(2114): step_with_ready_grads',
-            'megatron/core/optimizer/distrib_optimizer.py(1917): _copy_model_grads_to_main_grads',
+            'megatron/core/optimizer/optimizer.py\(\d+\): step',
+            'megatron/core/distributed/finalize_model_grads.py\(\d+\): finalize_model_grads',
+            'megatron/core/distributed/finalize_model_grads.py\(\d+\): _allreduce_layernorm_grads',
+            'megatron/core/distributed/finalize_model_grads.py\(\d+\): _allreduce_embedding_grads',
+            'megatron/core/distributed/finalize_model_grads.py\(\d+\): _allreduce_word_embedding_grads',
+            'megatron/core/distributed/finalize_model_grads.py\(\d+\): _allreduce_position_embedding_grads',
+            'megatron/core/optimizer/distrib_optimizer.py\(\d+\): step_with_ready_grads',
+            'megatron/core/optimizer/distrib_optimizer.py\(\d+\): _copy_model_grads_to_main_grads',
             # '_unscale_main_grads_and_check_for_nan',
             # 'clip_grad_norm',
-            'megatron/core/optimizer/distrib_optimizer.py(1960): _copy_main_params_to_model_params'
+            'megatron/core/optimizer/distrib_optimizer.py\(\d+\): _copy_main_params_to_model_params'
         ]
         
         cpu_op_names_list = [
@@ -1071,27 +1073,29 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             # 'recv_backward', 
             # 'send_forward', 
             # 'send_backward', 
-            'megatron/core/pipeline_parallel/schedules.py(173): forward_step', 
-            'megatron/core/pipeline_parallel/schedules.py(331): backward_step',
-            'megatron/core/pipeline_parallel/schedules.py(129): custom_backward',
-            'megatron/core/pipeline_parallel/schedules.py(1537): recv_forward', 
-            'megatron/core/pipeline_parallel/schedules.py(1548): recv_backward', 
-            'megatron/core/pipeline_parallel/schedules.py(1559): send_forward', 
-            'megatron/core/pipeline_parallel/schedules.py(1569): send_backward', 
+            # 'megatron/core/pipeline_parallel/schedules.py\(\d+\): forward_step', 
+            'musa_patch/core_pipeline_parallel_schedules.py\(\d+\): forward_step',
+            # 'megatron/core/pipeline_parallel/schedules.py\(\d+\): backward_step',
+            "musa_patch/core_pipeline_parallel_schedules.py\(\d+\): backward_step",
+            'megatron/core/pipeline_parallel/schedules.py\(\d+\: custom_backward',
+            'megatron/core/pipeline_parallel/schedules.py\(\d+\): recv_forward', 
+            'megatron/core/pipeline_parallel/schedules.py\(\d+\): recv_backward', 
+            'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_forward', 
+            'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_backward', 
             # 'send_forward_recv_backward', 
             # 'send_backward_recv_forward', 
-            'megatron/core/pipeline_parallel/schedules.py(1579): send_forward_recv_backward',
-            'megatron/core/pipeline_parallel/schedules.py(1596): send_backward_recv_forward',
+            'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_forward_recv_backward',
+            'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_backward_recv_forward',
             'mccl:send', 
             'mccl:recv', 
-            'megatron/core/distributed/finalize_model_grads.py(250): finalize_model_grads',
-            'megatron/core/optimizer/optimizer.py(1040): step',
-            'megatron/core/optimizer/distrib_optimizer.py(2114): step_with_ready_grads',
-            'megatron/core/optimizer/distrib_optimizer.py(1917): _copy_model_grads_to_main_grads',
+            'megatron/core/distributed/finalize_model_grads.py\(\d+\): finalize_model_grads',
+            'megatron/core/optimizer/optimizer.py\(\d+\): step',
+            'megatron/core/optimizer/distrib_optimizer.py\(\d+\): step_with_ready_grads',
+            'megatron/core/optimizer/distrib_optimizer.py\(\d+\): _copy_model_grads_to_main_grads',
             # '_unscale_main_grads_and_check_for_nan',
             # 'clip_grad_norm',
             # '_copy_main_params_to_model_params',
-            'megatron/core/optimizer/distrib_optimizer.py(1960): _copy_main_params_to_model_params',
+            'megatron/core/optimizer/distrib_optimizer.py\(\d+\): _copy_main_params_to_model_params',
             # 'mccl:all_reduce'
         ]
         filter_comm = NameFilter(create_regex_for_prefix_match(comm_names_list))

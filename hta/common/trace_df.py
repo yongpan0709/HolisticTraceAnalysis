@@ -306,16 +306,16 @@ def get_calculate_comm_volumn_function(op_name):
 
 def calculate_flops_for_trace_df(trace_df):
     trace_df['flops'] = trace_df.apply(lambda row: get_calculate_flops_function(row['s_name'])(row['input_dims']), axis=1)
-    trace_df['TFLOPS'] = trace_df.apply(lambda row: row['flops'] / row['dur'] * 1e-6 if row['flops'] > 0 else -1, axis=1)
+    trace_df['TFLOPS'] = trace_df.apply(lambda row: row['flops'] / row['kernel_span'] * 1e-6 if row['flops'] > 0 and row['kernel_span'] > 0 else -1, axis=1)
     return trace_df
 
 def calculate_comm_volume_for_trace_df(trace_df):
     trace_df['comm_volume'] = trace_df.apply(lambda row: get_calculate_comm_volumn_function(row['s_name'])(row['input_dims'], row['input_type']), axis=1)
     trace_df['bandwidth'] = trace_df.apply(
         lambda row: (
-            row['comm_volume'] / row.get('comm_time', row['dur']) * 1e-3
-            if row['s_name'].startswith(('mccl:send', 'mccl:recv'))
-            else (row['comm_volume'] / row['dur'] * 1e-3 if row['comm_volume'] > 0 else -1)
+            row['comm_volume'] / row.get('comm_time', row['kernel_span']) * 1e-3 
+            if row['s_name'].startswith(('send_forward', 'recv_forward')) and row.get('comm_time', row['kernel_span']) > 0
+            else (row['comm_volume'] / row['kernel_span'] * 1e-3 if row['comm_volume'] > 0 and row['dur'] > 0 else -1)
         ), 
         axis=1
     )

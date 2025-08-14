@@ -986,85 +986,7 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             # self.traces[rank].to_csv(f'set_recv_send_microbatch_id-{rank}_trace.csv')
             self.process_pipeline_start_end(rank, self.traces[rank])
             # self.traces[rank].to_csv(f'process_pipeline_start_end-{rank}_trace.csv')
-
-    # Todo: func list
-    def keep_useful_span(self, trace_df):
-        user_annotation_names_list = [
-            'warmup_state', 
-            'steady_state', 
-            'cooldown_state', 
-            'mccl:', 
-            'ProfilerStep', 
-            'backward_step',
-            'forward_step',
-        ]
-        python_function_names_list = [
-            # 'megatron/core/pipeline_parallel/schedules.py\(\d+\): forward_step', 
-            'musa_patch/core_pipeline_parallel_schedules.py\(\d+\): forward_step',
-            # 'megatron/core/pipeline_parallel/schedules.py\(\d+\): backward_step',
-            'musa_patch/core_pipeline_parallel_schedules.py\(\d+\): backward_step',
-            'megatron/core/pipeline_parallel/schedules.py\(\d+\): recv_forward', 
-            'megatron/core/pipeline_parallel/schedules.py\(\d+\): recv_backward', 
-            'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_forward', 
-            'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_backward', 
-            'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_forward_recv_backward',
-            'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_backward_recv_forward',
-            'megatron/core/pipeline_parallel/schedules.py\(\d+\): forward_backward_pipelining_without_interleaving',
-            'nn.Module: LanguageModelEmbedding_0',
-            'nn.Module: TransformerLayer_',
-            'nn.Module: RMSNorm_',
-            'nn.Module: MLASelfAttention_1',
-            'megatron/core/fusions/fused_bias_dropout.py\(\d+\): _bias_dropout_add',
-            'nn.Module: MoELayer_',
-            # 'RotaryEmbedding', 
-            # 'ParallelMLP',  
-            # 'ParallelTransformerLayer',
-            # 'ColumnParallelLinear', 
-            # 'RowParallelLinear', 
-            # 'FlashSelfAttention',
-            # 'MixedFusedLayerNorm',
-            # 'post_language_model_processing', 
-            # 'parallel_lm_logits', 
-            # 'vocab_parallel_cross_entropy', 
-            # 'average_losses_across_data_parallel_group',  
-            # 'apply_rotary_pos_emb',
-            # 'get_batch', 
-            # 'loss_func',
-            'megatron/core/optimizer/optimizer.py\(\d+\): step',
-            'megatron/core/distributed/finalize_model_grads.py\(\d+\): finalize_model_grads',
-            'megatron/core/distributed/finalize_model_grads.py\(\d+\): _allreduce_layernorm_grads',
-            'megatron/core/distributed/finalize_model_grads.py\(\d+\): _allreduce_embedding_grads',
-            'megatron/core/distributed/finalize_model_grads.py\(\d+\): _allreduce_word_embedding_grads',
-            'megatron/core/distributed/finalize_model_grads.py\(\d+\): _allreduce_position_embedding_grads',
-            'megatron/core/optimizer/distrib_optimizer.py\(\d+\): step_with_ready_grads',
-            'megatron/core/optimizer/distrib_optimizer.py\(\d+\): _copy_model_grads_to_main_grads',
-            # '_unscale_main_grads_and_check_for_nan',
-            # 'clip_grad_norm',
-            'megatron/core/optimizer/distrib_optimizer.py\(\d+\): _copy_main_params_to_model_params'
-        ]
-        
-        cpu_op_names_list = [
-            'aten::embedding',
-            'aten::matmul', 
-            'aten::rms_norm_forward', 
-            'aten::scaled_dot_product_attention', 
-            'aten::rms_norm_backward', 
-            'aten::_scaled_dot_product_attention_flash_musa_backward', 
-            'aten::embedding_backward',
-            'autograd::',
-            'torch::autograd::',
-            'autograd::engine::evaluate_function',
-        ]
-        
-        filter_user_annotation = NameFilter(create_regex_for_prefix_match(user_annotation_names_list))
-        filter_python_function = NameFilter(create_regex_for_prefix_match(python_function_names_list))
-        filter_cpu_op = NameFilter(create_regex_for_prefix_match(cpu_op_names_list))
-        trace_df_user_annotation = filter_user_annotation(trace_df[trace_df['s_cat'] == 'user_annotation'])
-        trace_df_python_function = filter_python_function(trace_df[trace_df['s_cat'] == 'python_function'])
-        trace_df_cpu_op = filter_cpu_op(trace_df[trace_df['s_cat'] == 'cpu_op'])
-        trace_df = pd.concat([trace_df_user_annotation, trace_df_python_function, trace_df_cpu_op])
-        return trace_df
-    
+  
     # Todo: func list
     def keep_comm_span_only(self, trace_df):
         comm_names_list = [
@@ -1074,67 +996,22 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             'recv_backward', 
             'send_forward', 
             'send_backward', 
-            # 'megatron/core/pipeline_parallel/schedules.py\(\d+\): forward_step', 
-            # 'musa_patch/core_pipeline_parallel_schedules.py\(\d+\): forward_step',
-            # 'megatron/core/pipeline_parallel/schedules.py\(\d+\): backward_step',
-            # "musa_patch/core_pipeline_parallel_schedules.py\(\d+\): backward_step",
-            # 'megatron/core/pipeline_parallel/schedules.py\(\d+\: custom_backward',
-            # 'megatron/core/pipeline_parallel/schedules.py\(\d+\): recv_forward', 
-            # 'megatron/core/pipeline_parallel/schedules.py\(\d+\): recv_backward', 
-            # 'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_forward', 
-            # 'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_backward', 
             'send_forward_recv_backward', 
             'send_backward_recv_forward', 
-            # 'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_forward_recv_backward',
-            # 'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_backward_recv_forward',
             # useing batch_isend_irecv
             # 'mccl:send', 
             # 'mccl:recv', 
-            # 'finalize_model_grads',
-            # 'megatron/core/distributed/finalize_model_grads.py\(\d+\): finalize_model_grads',
-            'megatron/core/optimizer/optimizer.py\(\d+\): step',
-            # 'megatron/core/optimizer/distrib_optimizer.py\(\d+\): step_with_ready_grads',
-            # 'megatron/core/optimizer/distrib_optimizer.py\(\d+\): _copy_model_grads_to_main_grads',
+            'finalize_model_grads',
+            'step',
+            # 'step_with_ready_grads',
+            # '_copy_model_grads_to_main_grads',
             # '_unscale_main_grads_and_check_for_nan',
             # 'clip_grad_norm',
             # '_copy_main_params_to_model_params',
-            # 'megatron/core/optimizer/distrib_optimizer.py\(\d+\): _copy_main_params_to_model_params',
+            # '_copy_main_params_to_model_params',
             'mccl:all_reduce'
         ]
-        # comm_names_list = [
-        #     # 'forward_step', 
-        #     # 'backward_step', 
-        #     # 'recv_forward', 
-        #     # 'recv_backward', 
-        #     # 'send_forward', 
-        #     # 'send_backward', 
-        #     # 'megatron/core/pipeline_parallel/schedules.py\(\d+\): forward_step', 
-        #     'musa_patch/core_pipeline_parallel_schedules.py\(\d+\): forward_step',
-        #     # 'megatron/core/pipeline_parallel/schedules.py\(\d+\): backward_step',
-        #     "musa_patch/core_pipeline_parallel_schedules.py\(\d+\): backward_step",
-        #     'megatron/core/pipeline_parallel/schedules.py\(\d+\: custom_backward',
-        #     'megatron/core/pipeline_parallel/schedules.py\(\d+\): recv_forward', 
-        #     'megatron/core/pipeline_parallel/schedules.py\(\d+\): recv_backward', 
-        #     'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_forward', 
-        #     'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_backward', 
-        #     # 'send_forward_recv_backward', 
-        #     # 'send_backward_recv_forward', 
-        #     'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_forward_recv_backward',
-        #     'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_backward_recv_forward',
-        #     'mccl:send', 
-        #     'mccl:recv', 
-        #     'megatron/core/distributed/finalize_model_grads.py\(\d+\): finalize_model_grads',
-        #     'megatron/core/optimizer/optimizer.py\(\d+\): step',
-        #     'megatron/core/optimizer/distrib_optimizer.py\(\d+\): step_with_ready_grads',
-        #     'megatron/core/optimizer/distrib_optimizer.py\(\d+\): _copy_model_grads_to_main_grads',
-        #     # '_unscale_main_grads_and_check_for_nan',
-        #     # 'clip_grad_norm',
-        #     # '_copy_main_params_to_model_params',
-        #     'megatron/core/optimizer/distrib_optimizer.py\(\d+\): _copy_main_params_to_model_params',
-        #     # 'mccl:all_reduce'
-        # ]
         filter_comm = NameFilter(create_regex_for_prefix_match(comm_names_list))
-        
         return filter_comm(trace_df)
             
     
@@ -1153,7 +1030,6 @@ class MegatronPipelineParrallelGroupTrace(Trace):
     def get_p2p_trace_for_one_pair(self, rank_prev, rank_next):
         """
         Compute the point-to-point (P2P) communication times between two ranks.
-
         Args:
             rank_prev (int): The previous rank.
             rank_next (int): The next rank.
@@ -1164,28 +1040,21 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         # Get the DataFrames for the given ranks
         trace_df_prev = self.traces[rank_prev]
         trace_df_next = self.traces[rank_next]
-        # trace_df_prev.to_csv(f"rank_prev_{rank_prev}_trace.csv", index=False)
-        # trace_df_next.to_csv(f"rank_next_{rank_next}_trace.csv", index=False)
         useful_trace_df_prev = self.get_useful_trace_df(trace_df_prev)
         useful_trace_df_next = self.get_useful_trace_df(trace_df_next)
+        # trace_df_prev.to_csv(f"rank_prev_{rank_prev}_trace.csv", index=False)
+        # trace_df_next.to_csv(f"rank_next_{rank_next}_trace.csv", index=False)
         # Compute forward P2P communication times
-        df_p2p_forward = self._compute_p2p_forward(useful_trace_df_prev, useful_trace_df_next)
-        self._update_comm_time(trace_df_prev, df_p2p_forward, 'send_next', 'send_next_on_prev')
-        self._update_comm_time(trace_df_next, df_p2p_forward, 'recv_prev', 'recv_prev_on_next')
-
-        # Compute backward P2P communication times
-        df_p2p_backward = self._compute_p2p_backward(useful_trace_df_prev, useful_trace_df_next)
-        self._update_comm_time(trace_df_prev, df_p2p_backward, 'recv_next', 'recv_next_on_prev')
-        self._update_comm_time(trace_df_next, df_p2p_backward, 'send_prev', 'send_prev_on_next')
-
+        df_p2p = self._compute_p2p_forward_backward(useful_trace_df_prev, useful_trace_df_next)
+        # df_p2p.to_csv(f"rank_prev_{rank_prev}—next-{rank_next}_trace.csv", index=False)
+        self._update_comm_time(trace_df_prev, df_p2p, 'index_on_prev')
+        self._update_comm_time(trace_df_next, df_p2p, 'index_on_next')
         # Update the original DataFrames with the wait times
         self._update_wait_time(trace_df_prev)
         self._update_wait_time(trace_df_next)
-
-        # Concatenate the forward and backward P2P DataFrames
-        df_p2p_bidirection = pd.concat([df_p2p_forward, df_p2p_backward])
-
-        return df_p2p_bidirection
+        # trace_df_prev.to_csv(f'trace_df_prev-{rank_prev}-2.csv')
+        # trace_df_next.to_csv(f'trace_df_next-{rank_next}-2.csv')
+        return df_p2p
 
     def _compute_p2p_forward(self, df_prev, df_next):
         """
@@ -1202,8 +1071,7 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         df_p2p_forward = pd.merge(df_prev, df_next, left_on='send_next', right_on='recv_prev', how='inner', suffixes=('_on_prev', '_on_next'))
         df_p2p_forward = df_p2p_forward[df_p2p_forward['send_next_on_prev'] >= 0]
         df_p2p_forward['p2p_forward'] = True
-        df_p2p_forward['comm_time'] = np.minimum(df_p2p_forward['dur_on_prev'], df_p2p_forward['dur_on_next'])
-            
+        df_p2p_forward['comm_time'] = np.minimum(df_p2p_forward['kernel_span_on_prev'], df_p2p_forward['kernel_span_on_next'])
         return df_p2p_forward
 
     def _compute_p2p_backward(self, df_prev, df_next):
@@ -1220,10 +1088,29 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         df_p2p_backward = pd.merge(df_prev, df_next, left_on='recv_next', right_on='send_prev', how='inner', suffixes=('_on_prev', '_on_next'))
         df_p2p_backward = df_p2p_backward[df_p2p_backward['recv_next_on_prev'] >= 0]
         df_p2p_backward['p2p_backward'] = True
-        df_p2p_backward['comm_time'] = np.minimum(df_p2p_backward['dur_on_prev'], df_p2p_backward['dur_on_next'])
+        df_p2p_backward['comm_time'] = np.minimum(df_p2p_backward['kernel_span_on_prev'], df_p2p_backward['kernel_span_on_next'])
         return df_p2p_backward
 
-    def _update_comm_time(self, original_df, p2p_df, merge_col_original, merge_col_p2p):
+    def _compute_p2p_forward_backward(self, df_prev, df_next):
+        """
+        Compute the backward P2P communication times between two DataFrames.
+
+        Args:
+            df_prev (pd.DataFrame): The previous rank DataFrame.
+            df_next (pd.DataFrame): The next rank DataFrame.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing the backward P2P communication times.
+        """
+        df_p2p = pd.merge(df_prev, df_next, left_on='recv_next', right_on='send_prev', how='inner', suffixes=('_on_prev', '_on_next'))
+        df_p2p = df_p2p[df_p2p['send_next_on_prev'].ge(0) | df_p2p['recv_next_on_prev'].ge(0)]
+        # batch isend and irecv: send and backward involved in one kernel
+        df_p2p['p2p_forward'] = True
+        df_p2p['p2p_backward'] = True
+        df_p2p['comm_time'] = np.minimum(df_p2p['kernel_span_on_prev'], df_p2p['kernel_span_on_next'])
+        return df_p2p
+
+    def _update_comm_time(self, original_df, p2p_df, p2p_index_col):
         """
         Update the communication times in the original DataFrame based on the P2P DataFrame.
 
@@ -1231,24 +1118,16 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             original_df (pd.DataFrame): The original DataFrame to update.
             p2p_df (pd.DataFrame): The P2P DataFrame containing the communication times.
             merge_col_original (str): The column name in the original DataFrame to merge on.
-            merge_col_p2p (str): The column name in the P2P DataFrame to merge on.
+            p2p_index (str): The column name in the P2P DataFrame to merge on.
         """
         # Ensure 'comm_time' column exists in the original DataFrame
         if 'comm_time' not in original_df.columns:
             original_df['comm_time'] = 0
 
         # Merge the DataFrames and handle suffixes to avoid renaming issues
-        temp_df = pd.merge(
-            original_df,
-            p2p_df[[merge_col_p2p, 'comm_time']].rename(columns={'comm_time': 'comm_time_p2p'}),
-            left_on=merge_col_original,
-            right_on=merge_col_p2p,
-            how='left'
-        )
-        # Align indices of the original DataFrame with the merged DataFrame to ensure proper assignment
-        comm_tmp = temp_df['comm_time'].fillna(0) + temp_df['comm_time_p2p'].fillna(0)
-        # Update the original DataFrame with the calculated communication time
-        original_df['comm_time'] = comm_tmp.values
+        for _, row in p2p_df.iterrows():
+            p2p_index = row['index_on_prev']
+            original_df.loc[original_df['index']==p2p_index, 'comm_time'] = row['comm_time']
 
     def _update_wait_time(self, df):
         """
@@ -1257,7 +1136,7 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         Args:
             df (pd.DataFrame): The DataFrame to update.
         """
-        df['wait_time'] = df['dur'] - df['comm_time']
+        df['wait_time'] = df['kernel_span'] - df['comm_time']
 
     
     def establish_p2p_link_on_adjacent_ranks(self):

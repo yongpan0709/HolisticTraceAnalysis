@@ -99,12 +99,11 @@ class DistributedMegatronTraceAnalysis:
         self.rank = self.comm.Get_rank()
         self.world_size = self.comm.Get_size()
         self.processor_name = MPI.Get_processor_name()
-        
         self.setup_dirs()
         self.setup_logging()
         self.init_pp_group_sub_dirs()
         self.assign_analysis_tasks()
-    
+
     def post_process(self):
         self.comm.Barrier()
         if self.rank == 0:
@@ -237,7 +236,7 @@ class DistributedMegatronTraceAnalysis:
             analyzer_single_pp_group = self.process_single_pp_group(folder)
             self.analysis_list.append(analyzer_single_pp_group)
         self.gather_infos_from_all_ranks()
-        self.analyze_anomalies()
+        # self.analyze_anomalies()
         self.post_process()
     
     def gather_infos_from_all_ranks(self):

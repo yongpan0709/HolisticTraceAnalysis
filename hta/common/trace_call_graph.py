@@ -180,9 +180,10 @@ class CallGraph:
             self._update_rank_stack_mapping(rank)
         
         # Save call stack information to the dataframe
-        if len(self.call_stacks) > 0:
-            csg = self.call_stacks[-1]
-            csg.save_call_stack_to_dataframe(apply_whole_graph=True)
+        for rank, stacks in self.rank_to_stacks.items():
+            if len(stacks) > 0:
+                _, main_stack = self.get_main_stack_on_rank(rank)
+                main_stack.save_call_stack_to_dataframe(apply_whole_graph=True)
 
     def _construct_call_graph_for_rank(self, rank):
         df = self.trace_data.get_trace(rank)

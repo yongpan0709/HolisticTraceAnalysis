@@ -1,12 +1,11 @@
 from collections import defaultdict
 from typing import Dict, List,Set
 import copy
+import pandas as pd
 
 DUP_LABEL = "@dup@"
-SHAPEUP_LABEL = "@shape@"
-SHAPEDOWN_LABEL = "shape@down"
-SHAPE_LABEL = [SHAPEUP_LABEL, SHAPEDOWN_LABEL]
-ANNOTATE_LABEL = [DUP_LABEL, SHAPEUP_LABEL, SHAPEDOWN_LABEL]
+SHAPE_LABEL = "@shape@"
+ANNOTATE_LABEL = [DUP_LABEL, SHAPE_LABEL] 
 
 SHAPE_POSITION = {
     '_AllToAll': 1,
@@ -17,16 +16,12 @@ output_template_to_file = r"""
 pretrain_deepseekv2.py\(\d+\): forward_step
     pretrain_deepseekv2.py\(\d+\): get_batch
     nn.Module: LanguageModelEmbedding_0
-
-    dense: 
-    nn.Module: TransformerLayer_0
-
+    
     moe:
-    nn.Module: TransformerLayer_1
+    nn.Module: TransformerLayer_0
+        nn.Module: RMSNorm_0
+        nn.Module: MLASelfAttention_0
         nn.Module: RMSNorm_1
-        nn.Module: MLASelfAttention_1
-        megatron/core/fusions/fused_bias_dropout.py\(\d+\): _bias_dropout_add
-        nn.Module: RMSNorm_2
         nn.Module: MoELayer_0
             nn.Module: TopKRouter_0
                 megatron/core/transformer/moe/router.py\(\d+\): gating
@@ -67,6 +62,28 @@ pretrain_deepseekv2.py\(\d+\): forward_step
     nn.Module: ColumnParallelLinear_0
     megatron/core/models/common/language_module/language_module.py\(\d+\): compute_language_model_loss
 """
+
+output_template_to_file_dsv3 = r"""
+pretrain_deepseekv2.py\(\d+\): forward_step
+    pretrain_deepseekv2.py\(\d+\): get_batch
+    nn.Module: LanguageModelEmbedding_0
+    
+    moe:
+    nn.Module: TransformerLayer_0
+        nn.Module: RMSNorm_0
+        nn.Module: MLASelfAttention_0
+        nn.Module: RMSNorm_1
+        nn.Module: MoELayer_0
+            megatron/core/transformer/moe/moe_layer.py\(\d+\): router_and_preprocess
+            megatron/core/transformer/moe/moe_layer.py\(\d+\): dispatch
+            megatron/core/transformer/moe/moe_layer.py\(\d+\): experts_compute
+                nn.Module: TEGroupedMLP_0
+            megatron/core/transformer/moe/moe_layer.py\(\d+\): combine
+    nn.Module: RMSNorm_2
+    nn.Module: ColumnParallelLinear_0
+    megatron/core/models/common/language_module/language_module.py\(\d+\): compute_language_model_loss
+"""
+
 # Function to count leading spaces or tabs
 def count_leading_whitespace(line):
     count = 0
@@ -83,12 +100,12 @@ def call_stack_with_ancestors_to_list(stack, call_stack_list, level=0):
         call_stack_list.append((entry['name'], entry['ancestors']))
         call_stack_with_ancestors_to_list(entry['children'], call_stack_list, level + 1)
 
-def extract_dup_or_shape_func_name_from_template(output_template: str) -> (Set[str], Dict[str, str]):
+def extract_dup_or_shape_func_name_from_template(output_template: str) -> (Set[str], Set[str]):
     # Split the output_template by newlines and strip leading/trailing whitespace
     lines = [line for line in output_template.splitlines() if line.strip() and line.strip() not in ['dense:', 'moe:', 'loss:'] ]
 
     dup_func_name = set()
-    need_shape_func_name: Dict[str, str] = defaultdict(str)
+    need_shape_func_name = set()
     for line in lines:
         Has_DUP_LABEL = False
         if DUP_LABEL in line:
@@ -96,18 +113,14 @@ def extract_dup_or_shape_func_name_from_template(output_template: str) -> (Set[s
             Has_DUP_LABEL = True
 
         Has_SHAPE_LABEL = False
-        shape_direction = ''
-        for shape_annotate in SHAPE_LABEL:
-            if shape_annotate in line:
-                line = line.replace(shape_annotate, '')
-                Has_SHAPE_LABEL = True
-                shape_direction = shape_annotate
+        if SHAPE_LABEL in line:
+            Has_SHAPE_LABEL = True
 
         func_name = line.strip()
         if Has_DUP_LABEL:
             dup_func_name.add(func_name)
         if Has_SHAPE_LABEL:
-            need_shape_func_name[func_name] = shape_direction
+            need_shape_func_name.add(func_name)
     return dup_func_name, need_shape_func_name
 
 def extract_func_name_from_template(output_template: str) -> List[str]:
@@ -149,6 +162,14 @@ def print_call_stack_with_ancestors(stack, level=0):
         print('    ' * level + forward_func_name)
         print('    ' * (level + 1) + 'Ancestors: ' + ' -> '.join(func_ancestors))
         # print_call_stack_with_ancestors(entry['children'], level + 1)
+    
+def set_pandas_display_options():
+    pd.set_option("display.max_rows", None)
+    pd.set_option("display.max_columns", None)
+    pd.set_option("display.max_colwidth", None)
+    pd.set_option("display.width", None)
+    pd.set_option("display.float_format", "{:.2f}".format)
+
 
 if __name__ == '__main__':
     print(extract_func_name_from_template(output_template_to_file))

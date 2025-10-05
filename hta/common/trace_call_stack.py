@@ -424,33 +424,20 @@ class CallStackGraph:
         if len(np.unique(events, axis=0)) != len(events):
             logger.error("BUG: the sorted array contains duplicates")
 
-        # stack: List[int] = []
-        # for ev_idx, _ev_dur, ev_kind, _ev_ts in events:
-        #     if ev_kind == -1:
-        #         if len(stack) > 0:
-        #             parent_index = stack[-1]
-        #         else:
-        #             parent_index = self.root_index
-        #         self._add_edge(parent_index, ev_idx)
-        #         stack.append(ev_idx)
-        #     else:  # e.type == 1
-        #         if len(stack) > 0:
-        #             stack.pop(-1)
-
-        active_events = []
-        for ev_idx, _ev_dur, ev_kind, ev_time in events:
-            if ev_kind == -1:  # Start event
-                # Find the most recent active event that can be a parent
-                parent_index = self.root_index
-                for ae_idx, ae_end in reversed(active_events):
-                    if ae_end >= ev_time + _ev_dur:  # This is the parent
-                        parent_index = ae_idx
-                        break
+        stack: List[int] = []
+        for ev_idx, _ev_dur, ev_kind, _ev_ts in events:
+            if ev_kind == -1:
+                if len(stack) > 0:
+                    parent_index = stack[-1]
+                else:
+                    parent_index = self.root_index
                 self._add_edge(parent_index, ev_idx)
-                active_events.append((ev_idx, ev_time + _ev_dur))
-            else:  # End event
-                # Remove the event from active_events
-                active_events = [ae for ae in active_events if ae[0] != ev_idx]
+                stack.append(ev_idx)
+            else:  # e.type == 1
+                while len(stack) > 0 and stack[-1] != ev_idx and ev_idx in stack:
+                    stack.pop(-1)
+                if len(stack) > 0 and stack[-1] == ev_idx:
+                    stack.pop(-1)
 
         t2 = perf_counter()
 

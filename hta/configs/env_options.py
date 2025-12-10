@@ -41,7 +41,7 @@ def _check_env_flag(name: str, default: str = "0") -> bool:
 
 
 def disable_ns_rounding() -> bool:
-    return _check_env_flag(HTA_DISABLE_NS_ROUNDING_ENV, "0")
+    return _check_env_flag(HTA_DISABLE_NS_ROUNDING_ENV, "1")
 
 
 def disable_call_graph_depth() -> bool:

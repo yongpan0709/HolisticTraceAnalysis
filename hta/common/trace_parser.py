@@ -255,7 +255,8 @@ def _compress_df(
     # drop rows with null values
     df.dropna(axis=0, subset=["cat"], inplace=True)
     df.drop(df[df["cat"] == "Trace"].index, inplace=True)
-
+    if cfg.drop_gpu_user_annotation:
+        df.drop(df[df["cat"] == "gpu_user_annotation"].index, inplace=True)
     """
       Todo: for keeping the fwdbwd info, do not drop columns here
       move these logic to add_fwd_bwd_links func

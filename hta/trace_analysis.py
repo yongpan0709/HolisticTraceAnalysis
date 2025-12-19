@@ -765,46 +765,20 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         self.t.display_traces_info(self.t.traces)
         logger.info('construct CallGraph for traces')
         call_graph = CallGraph(self.t)
-        # logger.info('print init call graph ')
-        # call_graph.print_call_graph(f'{self.output_dir}/init_graph.txt')
-
-        target_duplicate_name_list = [
-            'forward_step',
-            'bakcward_step',
-            'send_forward_recv_backward', 
-            'send_backward_recv_forward',
-            'recv_forward',
-            'recv_backward',
-            'send_forward',
-            'send_backward'
-        ]
-        
-        logger.info('eliminate_duplicate_named_children')
-        call_graph.eliminate_duplicate_named_children(target_duplicate_name_list)
-        # call_graph.print_call_graph(f'{self.output_dir}/eliminate_duplicate_named_children.txt')
+        for rank in call_graph.ranks:
+            _, main_stacks = call_graph.get_main_stack_on_rank(rank)
+            self.t.full_dfs[rank] = main_stacks.full_df
         
         logger.info('rename_children_with_duplicate_names')
         call_graph.rename_children_with_duplicate_names()
         # call_graph.print_call_graph(f'{self.output_dir}/rename_children_with_duplicate_names.txt')
         
-        logger.info('mark_send_recv_direction')
-        # call_graph.mark_send_recv_direction()
-        # call_graph.print_call_graph(f'{self.output_dir}/mark_send_recv_direction.txt')
-        
-        logger.info('assign_full_names')
-        call_graph.assign_full_names()
-        # call_graph.print_call_graph(f'{self.output_dir}/assign_full_names.txt')
-                
-        self.t.traces = call_graph.trace_data.traces
         logger.info('keep comm spans only')
         self.t.traces_comm_only = self.t.parallel_apply(self.t.keep_comm_span_only)
-        # for rank in call_graph.ranks:
-        #     _, main_stacks = call_graph.get_main_stack_on_rank(rank)
-        #     fullfd = main_stacks.full_df
-        #     self.t.traces_comm_only[rank] = self.t.keep_comm_span_only(fullfd)
-        #     self.t.traces_comm_only[rank].to_csv(f'{self.output_dir}/trace-comm-{rank}_full-df-before.csv')
-        #     self.t.traces_comm_only[rank]['dur'] = self.t.traces_comm_only[rank]['kernel_span']
-        #     self.t.traces_comm_only[rank].to_csv(f'{self.output_dir}/trace-comm-{rank}_full-df-after.csv')            
+        for rank in call_graph.ranks:
+            self.t.traces_comm_only[rank] = self.t.keep_comm_span_only(self.t.full_dfs[rank])
+            self.t.traces_comm_only[rank]['dur'] = self.t.traces_comm_only[rank]['kernel_span']
+
         self.t.display_traces_info(self.t.traces_comm_only)
         logger.info('set_micro_batch_id')
         self.t.set_micro_batch_id() 
@@ -818,7 +792,7 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         # logger.info('calculate_flops_for_trace_df')
         # self.t.traces = self.t.parallel_apply(calculate_flops_for_trace_df)
         
-        logger.info('construct call graphs after calculating bandwidth and flops')
+        # logger.info('construct call graphs after calculating bandwidth and flops')
         # call_graph = CallGraph(self.t)
         # logger.info('print final call graph')
         # call_graph.print_call_graph(f'{self.output_dir}/full_names.txt')
@@ -832,11 +806,10 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
     
     def generate_report(self, save_path):
         output_df = None
-        first_stage_optimizer_step = None
+        #first_stage_optimizer_step = None
 
         for stage_id, rank in enumerate(sorted(self.t.traces_comm_only.keys())):
-            trace_df = self.t.traces[rank]
-            # trace_df.to_csv(f'trace_df_rank-{rank}-stageid-{stage_id}.csv')
+            trace_df = self.t.full_dfs[rank]
             sorted_trace_df = self._preprocess_trace_df(trace_df)
 
             time_per_iteration = self._calculate_time_per_iteration(trace_df)
@@ -845,19 +818,20 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
             forward_step_avg_time, backward_step_avg_time, compute_time_total = self._calculate_step_times(all_forward_steps_df, all_backward_steps_df)
 
             all_comm_time_df = NameFilter(create_regex_for_prefix_match(['send_forward',  'recv_forward',  'send_forward_recv_backward',  'send_backward_recv_forward',  'send_backward',  'recv_backward']))(sorted_trace_df)
-            all_comm_time_df.to_csv(f'all_comm_time_df-{rank}-stageid-{stage_id}.csv')
+            #all_comm_time_df.to_csv(f'all_comm_time_df-{rank}-stageid-{stage_id}.csv')
             comm_time_total = self._calculate_comm_time_total(all_comm_time_df)
 
-            bubble_time_head = self._calculate_bubble_time_head(stage_id, all_comm_time_df)
-            bubble_time_middle = self._calculate_bubble_time_middle(stage_id, all_comm_time_df)
-            bubble_time_tail = self._calculate_bubble_time_tail(stage_id, all_comm_time_df)
-            bubble_time_final, first_stage_optimizer_step = self._calculate_optimizer_step_time_and_bubble(sorted_trace_df, first_stage_optimizer_step)
-            bubble_time_total = bubble_time_head + bubble_time_middle + bubble_time_tail + bubble_time_final
-            comm_time_total += bubble_time_final
-
+            bubble_time_head = self._calculate_bubble_time_head(all_comm_time_df)
+            bubble_time_middle = self._calculate_bubble_time_middle(all_comm_time_df)
+            bubble_time_tail = self._calculate_bubble_time_tail(all_comm_time_df)
+            finalize_model_grads_step_time = self._calculate_finalize_model_grads_step_time(sorted_trace_df)
+            optimizer_time = self._calculate_optimizer_step_time_and_bubble(sorted_trace_df)
+            logical_and_across_model_parallel_group_time = self._calculate_logical_and_across_model_parallel_group_time(sorted_trace_df)
+            #bubble_time_total = bubble_time_head + bubble_time_middle + bubble_time_tail # + bubble_time_final
+            #comm_time_total += bubble_time_final
             comm_time_true, overhead_wait_time_total = self._calculate_true_comm_and_overhead_wait_time(all_comm_time_df)
             
-            optimizer_time = self._calculate_optimizer_time(sorted_trace_df, bubble_time_final)
+            #optimizer_time = self._calculate_optimizer_time(sorted_trace_df, bubble_time_final, stage_id, rank)
             
             num_microbatch = len(all_forward_steps_df)  # Assuming the number of send steps represents the number of microbatches
             assert(len(all_backward_steps_df) == num_microbatch)
@@ -872,12 +846,14 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
                 'comm_time_total': comm_time_total,
                 'comm_time_true': comm_time_true,
                 'overhead_wait_time_total': overhead_wait_time_total,
-                'bubble_time_total': bubble_time_total,
+                #'bubble_time_total': bubble_time_total,
                 'bubble_time_head': bubble_time_head,
                 'bubble_time_middle': bubble_time_middle,
                 'bubble_time_tail': bubble_time_tail,
-                'bubble_time_final': bubble_time_final,
+                #'bubble_time_final': bubble_time_final,
                 'pipeline_parallel_size': self.t.pipeline_parallel_size,
+                'finalize_model_grads_step_time': finalize_model_grads_step_time,
+                'logical_and_across_model_parallel_group_time': logical_and_across_model_parallel_group_time,
                 'optimizer_time_total': optimizer_time
             }
 
@@ -890,14 +866,16 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
 
         if save_path is not None:
             output_df.to_csv(save_path, header=True, index=False)
-        print(output_df)
+        #print(output_df)
         return output_df
 
     # Todo: 'reduce_model_grads', 'step_', 'gather_model_params' 
-    def _calculate_optimizer_time(self, sorted_trace_df, bubble_time_final):
+    def _calculate_optimizer_time(self, sorted_trace_df, bubble_time_final, stage_id, rank):
         optimizer_df = NameFilter(create_regex_for_prefix_match(['finalize_model_grads', 
                                                                  'step', 
-                                                                 'step_with_ready_grads']))(sorted_trace_df)
+                                                                 'logical_and_across_model_parallel_group',
+                                                                 'reduce_max_stat_across_model_parallel_group']))(sorted_trace_df)
+        #optimizer_df.to_csv(f'optimizer_df-stageid{stage_id}-rank{rank}.csv')
         optimizer_time = optimizer_df['kernel_span'].sum()
         return optimizer_time - bubble_time_final
     
@@ -925,39 +903,45 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
     def _calculate_comm_time_total(self, all_comm_time_df):
         return all_comm_time_df['kernel_span'].sum()
 
-    def _calculate_bubble_time_head(self, stage_id, all_comm_time_df):
-        if stage_id == 0:
-            return 0
-        else:
-            first_recv_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^recv_forward.*')].index[0]
-            bubble_time_head = all_comm_time_df.loc[first_recv_index]['wait_time']
-            # all_comm_time_df.loc[first_recv_index, 'wait_time'] = 0
-            return bubble_time_head
+    def _calculate_bubble_time_head(self, all_comm_time_df):
+        recv_index_in_head = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^recv_forward(?:_\d+)?$')].index
+        send_index_in_head = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_forward(?:_\d+)?$')].index
+        return all_comm_time_df.loc[recv_index_in_head, 'wait_time'].sum() + all_comm_time_df.loc[send_index_in_head, 'wait_time'].sum()
 
-    def _calculate_bubble_time_middle(self, stage_id, all_comm_time_df):
+    def _calculate_bubble_time_middle(self, all_comm_time_df):
         send_forward_recv_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_forward_recv_backward.*')].index
         send_backward_recv_forward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_backward_recv_forward.*')].index
         return all_comm_time_df.loc[send_forward_recv_backward_index, 'wait_time'].sum() + all_comm_time_df.loc[send_backward_recv_forward_index, 'wait_time'].sum()
 
-    def _calculate_bubble_time_tail(self, stage_id, all_comm_time_df):
-        send_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_backward(?:_\d.+)?$')].index
-        recv_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^recv_backward(?:_\d.+)?$')].index
+    def _calculate_bubble_time_tail(self, all_comm_time_df):
+        send_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_backward(?:_\d+)?$')].index
+        recv_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^recv_backward(?:_\d+)?$')].index
         bubble_time_tail = all_comm_time_df.loc[send_backward_index, 'wait_time'].sum() + all_comm_time_df.loc[recv_backward_index, 'wait_time'].sum()
-        # all_comm_time_df.loc[end_recv_index, 'wait_time'] = 0
         return bubble_time_tail
 
+    def _calculate_finalize_model_grads_step_time(self, sorted_trace_df):
+        pattern = r'^finalize_model_grads$'
+        finalize_model_grads_step_time = sorted_trace_df[sorted_trace_df['s_name'].str.contains(pattern)]['kernel_span'].values[0]
+        return finalize_model_grads_step_time
+    
+    def _calculate_logical_and_across_model_parallel_group_time(self, sorted_trace_df):
+        pattern = r'^logical_and_across_model_parallel_group$'
+        logical_and_across_model_parallel_group_time = sorted_trace_df[sorted_trace_df['s_name'].str.contains(pattern)]['kernel_span'].values[0]
+        return logical_and_across_model_parallel_group_time
+    
     # Todo: func name
     #       sorted_trace_df[sorted_trace_df['full_name'].str.contains(pattern, regex=True)]['dur'].values[0]   why use the first value
-    def _calculate_optimizer_step_time_and_bubble(self, sorted_trace_df, first_stage_optimizer_step_time):
+    def _calculate_optimizer_step_time_and_bubble(self, sorted_trace_df):
         # Use regex to match 'full_name' with the pattern '?ProfilerStep?/step?'
         # Todo: func name
         # pattern = r'.*ProfilerStep.*/step.*'
         pattern = r'^step$'
         optimizer_step_time = sorted_trace_df[sorted_trace_df['s_name'].str.contains(pattern)]['kernel_span'].values[0]
-        if first_stage_optimizer_step_time is None:
-            first_stage_optimizer_step_time = optimizer_step_time
-        bubble_time_final = optimizer_step_time - first_stage_optimizer_step_time
-        return bubble_time_final, first_stage_optimizer_step_time
+        #if first_stage_optimizer_step_time is None:
+        #    first_stage_optimizer_step_time = optimizer_step_time
+        #bubble_time_final = optimizer_step_time - first_stage_optimizer_step_time
+        #return bubble_time_final, first_stage_optimizer_step_time, optimizer_step_time
+        return optimizer_step_time
 
     def _calculate_true_comm_and_overhead_wait_time(self, all_comm_time_df):
         comm_time_true = all_comm_time_df['comm_time'].sum()
@@ -977,13 +961,15 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
             'optimizer_time_total': args['optimizer_time_total'] / 1000,
             'comm_time_true': args['comm_time_true'] / 1000,
             'overhead_wait_time_total': args['overhead_wait_time_total'] / 1000,
-            'bubble_time_total': args['bubble_time_total'] / 1000,
-            'bubble_time_detail': [args['bubble_time_head'] / 1000, args['bubble_time_middle'] / 1000, args['bubble_time_tail'] / 1000, args['bubble_time_final'] / 1000],
+            #'bubble_time_total': args['bubble_time_total'] / 1000,
+            'bubble_time_detail': [args['bubble_time_head'] / 1000, args['bubble_time_middle'] / 1000, args['bubble_time_tail'] / 1000],
+            'finalize_model_grads_step_time': args['finalize_model_grads_step_time'] / 1000,
+            'logical_and_across_model_parallel_group_time': args['logical_and_across_model_parallel_group_time'] / 1000,
             'comp_time_ratio': args['compute_time_total'] / args['time_per_iteration'],
             'comm_time_ratio': args['comm_time_total'] / args['time_per_iteration'],
             'comm_time_true_ratio': args['comm_time_true'] / args['time_per_iteration'],
             'overhead_wait_time_ratio': args['overhead_wait_time_total'] / args['time_per_iteration'],
-            'bubble_time_ratio': args['bubble_time_total'] / args['time_per_iteration'],
+            #'bubble_time_ratio': args['bubble_time_total'] / args['time_per_iteration'],
             'bubble_time_ratio_theoretical': (args['pipeline_parallel_size'] - 1) / (args['pipeline_parallel_size'] - 1 + args['num_microbatch'])
         }
     

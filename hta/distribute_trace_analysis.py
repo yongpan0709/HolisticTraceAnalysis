@@ -14,7 +14,6 @@ import seaborn as sns
 import shutil
 import time
 import numpy as np
-from sklearn.ensemble import IsolationForest
 
 MAX_INT = 2**31 - 1  # Maximum size for each chunk
 

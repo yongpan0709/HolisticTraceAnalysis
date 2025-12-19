@@ -909,6 +909,7 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         self.pipeline_parallel_size = pipeline_parallel_size
         self.with_gpu_kernel = False
         self.traces_comm_only : Dict[int, pd.DataFrame] = {}
+        self.full_dfs : Dict[int, pd.DataFrame] = {}
             
     def load_traces(self, include_last_profiler_step: Optional[bool] = False) -> None:
         if self.is_parsed:
@@ -938,12 +939,9 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         # 初始化micro_batch_id列
         trace_df['micro_batch_id_forward'] = -1
         trace_df['micro_batch_id_backward'] = -1
-        # Todo: func name
         # 标记包含'recv_forward'和'recv_backward'的行
         trace_df['recv_forward'] = trace_df['s_name'].str.contains('recv_forward').astype(int).cumsum() - 1
         trace_df['recv_backward'] = trace_df['s_name'].str.contains('recv_backward').astype(int).cumsum() - 1
-        # trace_df['recv_forward'] = trace_df['s_name'].str.contains('^megatron/core/pipeline_parallel/schedules.py\(\d+\): (recv_forward|send_backward_recv_forward)').astype(int).cumsum() - 1
-        # trace_df['recv_backward'] = trace_df['s_name'].str.contains('^megatron/core/pipeline_parallel/schedules.py\(\d+\): (recv_backward|send_forward_recv_backward)').astype(int).cumsum() - 1
 
         # 更新'micro_batch_id_forward'和'micro_batch_id_backward'
         trace_df.loc[trace_df['s_name'].str.contains('forward'), 'micro_batch_id_forward'] = trace_df['recv_forward']
@@ -965,27 +963,20 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         trace_df.loc[trace_df['s_name'].str.contains('send_forward', regex=False), 'send_next'] = trace_df['micro_batch_id_forward']
         trace_df.loc[trace_df['s_name'].str.contains('send_backward', regex=False), 'send_prev'] = trace_df['micro_batch_id_backward']
     
-    # Todo: func name
+    # Use: func annotations
     def process_pipeline_start_end(self, rank, df):
         if is_first_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
             df.loc[df['s_name'].str.contains('recv_forward'), 'recv_prev'] = -1
             df.loc[df['s_name'].str.contains('send_backward'), 'send_prev'] = -1
-            # df.loc[df['s_name'].str.contains(r'megatron/core/pipeline_parallel/schedules.py\(\d+\): recv_forward', regex=True), 'recv_prev'] = -1
-            # df.loc[df['s_name'].str.contains(r'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_backward', regex=True), 'send_prev'] = -1
         if is_last_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
             df.loc[df['s_name'].str.contains('recv_backward'), 'recv_next'] = -1
             df.loc[df['s_name'].str.contains('send_forward'), 'send_next'] = -1
-            # df.loc[df['s_name'].str.contains(r'megatron/core/pipeline_parallel/schedules.py\(\d+\): recv_backward', regex=True), 'recv_next'] = -1
-            # df.loc[df['s_name'].str.contains(r'megatron/core/pipeline_parallel/schedules.py\(\d+\): send_forward', regex=True), 'send_next'] = -1
 
     def set_micro_batch_id(self):
         for rank in self.get_ranks():
-            self.set_self_microbatch_id(self.traces[rank])
-            # self.traces[rank].to_csv(f'set-self-microbatch_id-{rank}_trace.csv')
-            self.set_recv_send_microbatch_id(self.traces[rank])
-            # self.traces[rank].to_csv(f'set_recv_send_microbatch_id-{rank}_trace.csv')
-            self.process_pipeline_start_end(rank, self.traces[rank])
-            # self.traces[rank].to_csv(f'process_pipeline_start_end-{rank}_trace.csv')
+            self.set_self_microbatch_id(self.full_dfs[rank])
+            self.set_recv_send_microbatch_id(self.full_dfs[rank])
+            self.process_pipeline_start_end(rank, self.full_dfs[rank])
   
     # Todo: func list
     def keep_comm_span_only(self, trace_df):
@@ -1006,10 +997,12 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             # 'step_with_ready_grads',
             # '_copy_model_grads_to_main_grads',
             # '_unscale_main_grads_and_check_for_nan',
-            # 'clip_grad_norm',
+            #'clip_grad_norm',
             # '_copy_main_params_to_model_params',
             # '_copy_main_params_to_model_params',
-            'mccl:all_reduce'
+            'logical_and_across_model_parallel_group',
+            'reduce_max_stat_across_model_parallel_group',
+            #'mccl:all_reduce'
         ]
         filter_comm = NameFilter(create_regex_for_prefix_match(comm_names_list))
         return filter_comm(trace_df)
@@ -1038,23 +1031,33 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             pd.DataFrame: A DataFrame containing the bidirectional P2P communication times.
         """
         # Get the DataFrames for the given ranks
-        trace_df_prev = self.traces[rank_prev]
-        trace_df_next = self.traces[rank_next]
+        trace_df_prev = self.full_dfs[rank_prev]
+        trace_df_next = self.full_dfs[rank_next]
         useful_trace_df_prev = self.get_useful_trace_df(trace_df_prev)
         useful_trace_df_next = self.get_useful_trace_df(trace_df_next)
-        # trace_df_prev.to_csv(f"rank_prev_{rank_prev}_trace.csv", index=False)
-        # trace_df_next.to_csv(f"rank_next_{rank_next}_trace.csv", index=False)
         # Compute forward P2P communication times
-        df_p2p = self._compute_p2p_forward_backward(useful_trace_df_prev, useful_trace_df_next)
-        # df_p2p.to_csv(f"rank_prev_{rank_prev}—next-{rank_next}_trace.csv", index=False)
-        self._update_comm_time(trace_df_prev, df_p2p, 'index_on_prev')
-        self._update_comm_time(trace_df_next, df_p2p, 'index_on_next')
+        df_p2p_forward = self._compute_p2p_forward(useful_trace_df_prev, useful_trace_df_next)
+        # Link the dataframes of two adjacent pp i and pp i+1 by micro-bs id to get a forward-direction pair of send and recv
+        # After linking, take min(send, recv) and save it to the comm_time column
+        # Then copy the comm_time data to the new comm_time column of pp i
+        # Similarly, copy the comm_time data to the new comm_time column of pp i+1
+        self._update_comm_time(trace_df_prev, df_p2p_forward, 'index', 'index_on_prev')
+        self._update_comm_time(trace_df_next, df_p2p_forward, 'index', 'index_on_next')
+        # Compute backward P2P communication times
+        df_p2p_backward = self._compute_p2p_backward(useful_trace_df_prev, useful_trace_df_next)
+        self._update_comm_time(trace_df_prev, df_p2p_backward, 'index', 'index_on_prev')
+        self._update_comm_time(trace_df_next, df_p2p_backward, 'index', 'index_on_next')
+        # same as above. Calculate the pairwise send and recv funcs in the backward direction
+        # and compute min(send, recv) into comm_time.
+        # After completing the calculation of the actual comm_time for both forward and backward directions, 
+        # wait_time = send/recv - comm_time 
         # Update the original DataFrames with the wait times
         self._update_wait_time(trace_df_prev)
         self._update_wait_time(trace_df_next)
-        # trace_df_prev.to_csv(f'trace_df_prev-{rank_prev}-2.csv')
-        # trace_df_next.to_csv(f'trace_df_next-{rank_next}-2.csv')
-        return df_p2p
+        # Concatenate the forward and backward P2P DataFrames
+        df_p2p_bidirection = pd.concat([df_p2p_forward, df_p2p_backward])
+
+        return df_p2p_bidirection
 
     def _compute_p2p_forward(self, df_prev, df_next):
         """
@@ -1091,26 +1094,7 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         df_p2p_backward['comm_time'] = np.minimum(df_p2p_backward['kernel_span_on_prev'], df_p2p_backward['kernel_span_on_next'])
         return df_p2p_backward
 
-    def _compute_p2p_forward_backward(self, df_prev, df_next):
-        """
-        Compute the backward P2P communication times between two DataFrames.
-
-        Args:
-            df_prev (pd.DataFrame): The previous rank DataFrame.
-            df_next (pd.DataFrame): The next rank DataFrame.
-
-        Returns:
-            pd.DataFrame: A DataFrame containing the backward P2P communication times.
-        """
-        df_p2p = pd.merge(df_prev, df_next, left_on='recv_next', right_on='send_prev', how='inner', suffixes=('_on_prev', '_on_next'))
-        df_p2p = df_p2p[df_p2p['send_next_on_prev'].ge(0) | df_p2p['recv_next_on_prev'].ge(0)]
-        # batch isend and irecv: send and backward involved in one kernel
-        df_p2p['p2p_forward'] = True
-        df_p2p['p2p_backward'] = True
-        df_p2p['comm_time'] = np.minimum(df_p2p['kernel_span_on_prev'], df_p2p['kernel_span_on_next'])
-        return df_p2p
-
-    def _update_comm_time(self, original_df, p2p_df, p2p_index_col):
+    def _update_comm_time(self, original_df, p2p_df, merge_col_original, merge_col_p2p):
         """
         Update the communication times in the original DataFrame based on the P2P DataFrame.
 
@@ -1118,16 +1102,13 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             original_df (pd.DataFrame): The original DataFrame to update.
             p2p_df (pd.DataFrame): The P2P DataFrame containing the communication times.
             merge_col_original (str): The column name in the original DataFrame to merge on.
-            p2p_index (str): The column name in the P2P DataFrame to merge on.
+            merge_col_p2p (str): The column name in the P2P DataFrame to merge on.
         """
         # Ensure 'comm_time' column exists in the original DataFrame
         if 'comm_time' not in original_df.columns:
-            original_df['comm_time'] = 0
+            original_df['comm_time'] = 0.0
 
-        # Merge the DataFrames and handle suffixes to avoid renaming issues
-        for _, row in p2p_df.iterrows():
-            p2p_index = row['index_on_prev']
-            original_df.loc[original_df['index']==p2p_index, 'comm_time'] = row['comm_time']
+        original_df.loc[original_df[merge_col_original].isin(p2p_df[merge_col_p2p]), 'comm_time'] = p2p_df['comm_time'].values
 
     def _update_wait_time(self, df):
         """
@@ -1144,6 +1125,7 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         self.traces_p2p_comm = {}
         for rank_prev, rank_next in rank_pairs:
             df_p2p_bidirection = self.get_p2p_trace_for_one_pair(rank_prev, rank_next)
+            #df_p2p_bidirection.to_csv(f'p2p_trace_rank_{rank_prev}_{rank_next}.csv', index=False)
             self.traces_p2p_comm[rank_prev] = df_p2p_bidirection
         
         self.trace_df_p2p_flow_events = self.combine_into_one_trace(self.traces_p2p_comm)

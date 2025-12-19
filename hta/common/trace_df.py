@@ -204,10 +204,12 @@ def save_trace_df_to_file(df: pd.DataFrame, output_file: str, trace_df_p2p_comm_
     columns_to_drop = ['s_name', 's_cat']
     
     new_df = df[columns_to_keep].copy()
+    new_df['ts'] = df['first_kernel_start']
+    new_df['dur'] = df['kernel_span']
     new_df['name'] = df['s_name']
     new_df['cat'] = df['s_cat']
     new_df['ph'] = 'X'
-    new_df['args'] = df.apply(lambda row: {col: row[col] for col in row.index if col not in columns_to_keep + columns_to_drop}, axis=1)
+    #new_df['args'] = df.apply(lambda row: {col: row[col] for col in row.index if col not in columns_to_keep + columns_to_drop}, axis=1)
 
     trace_data = meta_data.copy() if meta_data is not None else {}
     trace_events = new_df.to_dict('records')

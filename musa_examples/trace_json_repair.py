@@ -36,7 +36,7 @@ def fix_json_value_missing(file_path):
 if __name__ == "__main__":
     import time
     base_dir = "../"
-    trace_dir = str(Path(base_dir).joinpath("kimi-bs4-0-8"))
+    trace_dir = str(Path(base_dir).joinpath("1215-mr-iter2k"))
     cfg = ParserConfig.get_default_cfg()
     # config for extracting shape info
     cfg.add_args(ParserConfig.ARGS_INPUT_SHAPE)

@@ -84,6 +84,64 @@ pretrain_deepseekv2.py\(\d+\): forward_step
     megatron/core/models/common/language_module/language_module.py\(\d+\): compute_language_model_loss
 """
 
+output_template_to_file_debug = r"""
+pretrain_deepseekv2.py\(\d+\): forward_step
+    pretrain_deepseekv2.py\(\d+\): get_batch
+        megatron/training/utils.py\(459\): get_batch_on_this_tp_rank
+        megatron/core/utils.py\(1833\): get_batch_on_this_cp_rank
+"""
+
+output_template_to_file_kimi = r"""
+pretrain_kimi.py\(\d+\): <module>
+    musa_patch/training.py\(\d+\): train_step
+        musa_patch/core_pipeline_parallel_schedules.py\(\d+\): forward_step
+            pretrain_kimi.py\(\d+\): forward_step
+                pretrain_kimi.py\(\d+\): get_batch
+                    megatron/training/utils.py\(\d+\): get_batch_on_this_tp_rank
+                nn.Module: DistributedDataParallel_0
+                    megatron/core/models/gpt/gpt_model.py\(\d+\): _preprocess
+                        nn.Module: LanguageModelEmbedding_0
+                    nn.Module: TransformerBlock_0
+                        megatron/core/transformer/transformer_layer.py\(\d+\): __call__
+                            nn.Module: TransformerLayer_0
+                                megatron/core/transformer/transformer_layer.py\(\d+\): _forward_attention
+                                    megatron/core/tensor_parallel/random.py\(\d+\): checkpoint @dup@
+                                    nn.Module: MLASelfAttention_0
+                                    megatron/core/fusions/fused_bias_dropout.py\(\d+\): _bias_dropout_add @dup@
+                                megatron/core/transformer/transformer_layer.py\(\d+\): _forward_mlp
+                                    nn.Module: MLP_0
+                                        nn.Module: TELayerNormColumnParallelLinear_2
+                                        megatron/core/fusions/fused_bias_swiglu.py\(\d+\): bias_swiglu_impl
+                                        nn.Module: TERowParallelLinear_1
+                                    megatron/core/tensor_parallel/random.py\(\d+\): checkpoint @dup@
+                                    nn.Module: MoELayer_0
+                                        megatron/core/transformer/moe/moe_layer.py\(\d+\): custom_forward
+                                            megatron/core/transformer/moe/moe_layer.py\(\d+\): router_and_preprocess
+                                                nn.Module: TopKRouter_0
+                                                megatron/core/transformer/moe/token_dispatcher.py: dispatch_preprocess
+                                            megatron/core/transformer/moe/moe_layer.py\(\d+\): dispatch
+                                            megatron/core/transformer/moe/moe_layer.py\(\d+\): experts_compute
+                                                nn.Module: SharedExpertMLP_0
+                                                megatron/core/transformer/moe/token_dispatcher.py\(\d+\): dispatch_postprocess
+                                                nn.Module: TEGroupedMLP_0
+                                                    nn.Module: TEColumnParallelGroupedLinear_0
+                                                    megatron/core/transformer/moe/experts.py\(\d+\): bias_act_func
+                                                    nn.Module: TERowParallelGroupedLinear_0
+                                                megatron/core/transformer/moe/token_dispatcher.py\(\d+\): combine_preprocess
+                                            megatron/core/transformer/moe/moe_layer.py\(\d+\): combine
+                                    megatron/core/fusions/fused_bias_dropout.py\(\d+\): _bias_dropout_add @dup@
+                        nn.Module: RMSNorm_2
+                    megatron/core/models/gpt/gpt_model.py\(\d+\): _postprocess
+                        nn.Module: ColumnParallelLinear_0
+                        megatron/core/models/common/language_module/language_module.py\(\d+\): compute_language_model_loss
+            megatron/core/pipeline_parallel/schedules.py\(\d+\): forward_step_calc_loss
+        megatron/core/pipeline_parallel/p2p_communication.py\(\d+\): send_backward_recv_forward
+        megatron/core/pipeline_parallel/p2p_communication.py\(\d+\): send_forward_recv_backward
+        megatron/core/pipeline_parallel/p2p_communication.py\(\d+\): send_forward
+        megatron/core/pipeline_parallel/p2p_communication.py\(\d+\): send_backward
+        megatron/core/pipeline_parallel/p2p_communication.py\(\d+\): recv_forward
+        megatron/core/pipeline_parallel/p2p_communication.py\(\d+\): recv_backward
+"""
 # Function to count leading spaces or tabs
 def count_leading_whitespace(line):
     count = 0

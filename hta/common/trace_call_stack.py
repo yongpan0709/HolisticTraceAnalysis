@@ -274,7 +274,7 @@ class CallStackGraph:
     def _load_nodes_data(self):
         """load node data from DataFrame to dict"""
         self.nodes_data = {}
-        for _, row in self.full_df.iterrows():
+        for _, row in self.df.iterrows():
             node_id = row['index']
             self.nodes_data[node_id] = row.to_dict()
     

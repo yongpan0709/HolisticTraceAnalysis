@@ -132,66 +132,22 @@ class CallGraph:
         """
         Construct the call graph from the traces of a distributed training job.
         """
+        # TODO:
+        # - make it parallel when there are more than one ranks.
         logger.debug(f"Constructing Call Graph for ranks: {self.ranks}")
-        
-        s_map: pd.Series = pd.Series(self.trace_data.symbol_table.get_sym_id_map())
-        s_tab: pd.Series = pd.Series(self.trace_data.symbol_table.get_sym_table())
-        main_thread_indicators: pd.Series = s_map[
-            s_map.index.str.startswith("ProfilerStep#") | 
-            s_map.index.str.startswith("forward_step")
-        ]
-        bwd_thread_indicators: pd.Series = s_map[s_map.index.str.contains("autograd::")]
-        
-        def _infer_stack_label(stack: CallStackGraph) -> str:
-            name_ids = stack.df["name"].unique()
-            if set(name_ids).intersection(set(main_thread_indicators.values)):
-                label = "main"
-            elif set(name_ids).intersection(set(bwd_thread_indicators.values)):
-                label = "bwd"
-            elif len(name_ids) > 0:
-                label = s_tab[name_ids[0]]
-            else:
-                label = "empty"
-            return label
-        
-        instances = [self for _ in self.ranks]
-        inputs = [((), {'rank': rank}) for rank in self.ranks]
-        results = apply_class_function_for_parallel(instances, '_construct_call_graph_for_rank', inputs, use_multiprocessing=True)
-        
-        for rank, (nodes, call_stacks) in zip(self.ranks, results):
-            self.rank_to_nodes[rank] = nodes
+        for rank in self.ranks:
+            t0 = perf_counter()
+            self.rank_to_nodes[rank] = {}
             self.rank_to_stacks[rank] = {}
-            for csi, csg in call_stacks.items():
-                self.rank_to_stacks[rank][csi] = csg
-                self.call_stacks.append(csg)
-                
-                self.mapping.loc[len(self.mapping)] = (
-                    csi.rank,
-                    csi.pid,
-                    csi.tid,
-                    _infer_stack_label(csg),
-                    len(self.call_stacks) - 1,
-                    csg.root_index,
-                    1,
-                )
-                
-            self._connect_stacks(rank)
-            logger.debug("connecting stacks of forward and backward threads")
-            self._update_rank_stack_mapping(rank)
-        
-        # Save call stack information to the dataframe
-        for rank, stacks in self.rank_to_stacks.items():
-            if len(stacks) > 0:
-                _, main_stack = self.get_main_stack_on_rank(rank)
-                main_stack.save_call_stack_to_dataframe(apply_whole_graph=True)
-
-    def _construct_call_graph_for_rank(self, rank):
-        df = self.trace_data.get_trace(rank)
-        # add an "end" column for time interval based filtering
-        if "end" not in df.columns:
-            df["end"] = df["ts"] + df["dur"]
-
-        return self._build_call_stacks(df, self.trace_data.symbol_table, rank)
+            df = self.trace_data.get_trace(rank)
+            # add an "end" column for time interval based filtering
+            if "end" not in df.columns:
+                df["end"] = df["ts"] + df["dur"]
+            self._build_call_stacks(df, self.trace_data.symbol_table, rank)
+            t1 = perf_counter()
+            logger.debug(
+                f"constructed {len(self.rank_to_stacks[rank])} call stacks for rank {rank} in {t1-t0:.2f} seconds"
+            )
 
     def _build_call_stacks(
         self,
@@ -215,9 +171,30 @@ class CallGraph:
         df.loc[df.index, "first_kernel_start"] = -1
         df.loc[df.index, "last_kernel_end"] = -1
 
+        s_map: pd.Series = pd.Series(self.trace_data.symbol_table.get_sym_id_map())
+        s_tab: pd.Series = pd.Series(self.trace_data.symbol_table.get_sym_table())
+        main_thread_indicators: pd.Series = s_map[
+            s_map.index.str.startswith("ProfilerStep#")
+        ]
+        bwd_thread_indicators: pd.Series = s_map[s_map.index.str.contains("autograd::")]
+
+        def _infer_stack_label(stack: CallStackGraph) -> str:
+            name_ids = stack.df["name"].unique()
+            if set(name_ids).intersection(set(main_thread_indicators.values)):
+                label = "main"
+            elif set(name_ids).intersection(set(bwd_thread_indicators.values)):
+                label = "bwd"
+            elif len(name_ids) > 0:
+                label = s_tab[name_ids[0]]
+            else:
+                label = "empty"
+            return label
+
         df_correlation = get_cpu_gpu_correlation(df)
-        nodes: Dict[int, CallStackNode] = {}
-        call_stacks: Dict[CallStackIdentity, CallStackGraph] = {}
+        call_stacks: Dict[CallStackIdentity, CallStackGraph] = self.rank_to_stacks[rank]
+        nodes: Dict[int, CallStackNode] = self.rank_to_nodes[rank]
+        nodes.clear()
+
         for (pid, tid), df_thread in df.groupby(["pid", "tid"]):
             csi = CallStackIdentity(rank, pid, tid)
             device = infer_device_type(df_thread)
@@ -242,15 +219,33 @@ class CallGraph:
                 save_call_stack_to_df=False,
             )
             call_stacks[csi] = csg
+            self.call_stacks.append(csg)
+
+            self.mapping.loc[len(self.mapping)] = (
+                csi.rank,
+                csi.pid,
+                csi.tid,
+                _infer_stack_label(csg),
+                len(self.call_stacks) - 1,
+                csg.root_index,
+                1,
+            )
             t1 = perf_counter()
             logger.debug(
                 f"Created CallStackGraph of {csg.identity}: num_events={csg.df.shape[0]}, num_nodes={len(csg.nodes)}"
                 f"in {t1-t0:.2f} seconds"
             )
 
-        self._normalize_stack_columns(df)
+        logger.debug("connecting stacks of forward and backward threads")
+        self._connect_stacks(rank)
+        self._update_rank_stack_mapping(rank)
 
-        return nodes, call_stacks
+        # Save call stack information to the dataframe
+        if len(self.call_stacks) > 0:
+            csg = self.call_stacks[-1]
+            csg.save_call_stack_to_dataframe(apply_whole_graph=True)
+
+        self._normalize_stack_columns(df)
 
     @staticmethod
     def _normalize_stack_columns(df: pd.DataFrame) -> None:

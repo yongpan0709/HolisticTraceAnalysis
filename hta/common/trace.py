@@ -915,7 +915,7 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         if self.is_parsed:
             logger.warning("Traces are already parsed and loaded!")
             return
-        self.parse_traces(use_multiprocessing=False)
+        self.parse_traces(use_multiprocessing=True)
         
         self.with_gpu_kernel = True
         for rank, trace_df in self.traces.items():

@@ -10,8 +10,8 @@ def main():
     TP_SIZE = 1
     PP_SIZE = 3
     DP_SIZE = 8
-    #trace_dir = '/Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/1215-mr-iter2k'
     trace_dir = '/Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/1215-bs4-iter2k-0-8-16'
+    #trace_dir = '/Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/kimi-pp-32'
 
     # Llama3
     # TP_SIZE = 2

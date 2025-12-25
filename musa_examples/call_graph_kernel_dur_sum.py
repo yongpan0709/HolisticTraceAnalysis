@@ -9,14 +9,7 @@ from typing import Dict, List, Set
 import numpy as np
 import pandas as pd
 from collections import deque
-from call_graph_template import extract_func_name_from_template, extract_dup_or_shape_func_name_from_template, output_template_to_file, SHAPE_POSITION
-
-def set_pandas_display_options():
-    pd.set_option("display.max_rows", None)
-    pd.set_option("display.max_columns", None)
-    pd.set_option("display.max_colwidth", None)
-    pd.set_option("display.width", None)
-    pd.set_option("display.float_format", "{:.2f}".format)
+from call_graph_template import extract_func_name_from_template, extract_dup_or_shape_func_name_from_template, output_template_to_file, SHAPE_POSITION, set_pandas_display_options, output_template_to_file_kimi, output_template_to_file_debug
 
 
 def get_backward_duration(df, cg, rank, forward_index): 
@@ -70,6 +63,7 @@ def get_forward_duration_dup(df, forward_func_name, func_ancestors, cg, rank, fu
 
 def calculate_statistics(df: pd.DataFrame, func_name: str, calculate_col_name: str = 'kernel_span'): #, fwd_bwd: str = 'fwd'):
     df[calculate_col_name] = df[calculate_col_name]/1000.0
+    df = df[df[calculate_col_name] > 0]
     df_dur = pd.DataFrame({
                         'mean': df[calculate_col_name].mean(),
                         'q_25': df[calculate_col_name].quantile(.25),
@@ -97,20 +91,22 @@ def extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name):
 
 def cal_dur_percent(row, fwd_total_dur_mean, bwd_total_dur_mean):
     if row.name.endswith('-bwd'):
-        return row['mean']/bwd_total_dur_mean
+        return row['mean']*row['count']/bwd_total_dur_mean
     else:
-        return row['mean']/fwd_total_dur_mean
-    
+        return row['mean']*row['count']/fwd_total_dur_mean
+
+# HTA_DISABLE_NS_ROUNDING=1 python call_graph_kernel_dur_sum.py
 if __name__ == "__main__":
     import time
     base_dir = "../"
-    trace_dir = str(Path(base_dir).joinpath("ds-0627"))
+    trace_dir = str(Path(base_dir).joinpath("kimi-trace"))
     cfg = ParserConfig.get_default_cfg()
     # config for extracting shape info
     cfg.add_args(ParserConfig.ARGS_INPUT_SHAPE)
     ParserConfig.set_default_cfg(cfg)
     trace_files = get_trace_files(trace_dir)
     for rank, trace_file in trace_files.items():
+        # HTA starts from here
         t = Trace(trace_files={rank: trace_file}, trace_dir="")
         t.load_traces()
         # transform name and cat columns to s_name and s_cat
@@ -122,8 +118,10 @@ if __name__ == "__main__":
         t1 = time.perf_counter()
         print(f"Rank {rank}, CallGraph took {t1 - t0:.2f} seconds")
         df = cg.call_stacks[-1].full_df
-        dup_func_name, need_shape_func_name = extract_dup_or_shape_func_name_from_template(output_template_to_file)
-        func_name = extract_func_name_from_template(output_template_to_file)
+        # df.to_csv(f"./bs1-1005-full_df_{rank}_debug.csv", index=False)
+        #break
+        dup_func_name, need_shape_func_name = extract_dup_or_shape_func_name_from_template(output_template_to_file_kimi)
+        func_name = extract_func_name_from_template(output_template_to_file_kimi)
         stat_info_funcs_grouped = pd.DataFrame()
         func_mapping_node_index: Dict[str, List[np.float64]] = defaultdict(list)
 
@@ -149,7 +147,7 @@ if __name__ == "__main__":
         stat_info_funcs_grouped['mean_percent'] = stat_info_funcs_grouped.apply(lambda row: cal_dur_percent(row, fwd_total_dur_mean, bwd_total_dur_mean), axis=1)
 
         shape_info = extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name)
-        with open(f"./call_graph_duration_{rank}.txt", "w") as f:
+        with open(f"./kimi-{rank}.txt", "w") as f:
             for forward_func_name, func_ancestors in func_name:
                 if forward_func_name.split('@')[0] in need_shape_func_name:
                     if len(shape_info[forward_func_name]['example']) >= SHAPE_POSITION[forward_func_name.split('@')[0]]:
@@ -173,8 +171,8 @@ if __name__ == "__main__":
                     f.write(f'{"    " * len(func_ancestors)}{forward_func_name}\n')
 
                 if forward_func_name in stat_info_funcs_grouped.index:
-                    print(f'{"    " * (len(func_ancestors)+1)} fwd: mean_percent: {stat_info_funcs_grouped.loc[forward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[forward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[forward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[forward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[forward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[forward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[forward_func_name,"min"]:.2f}')
                     backward_func_name = forward_func_name + '-bwd'
-                    print(f'{"    " * (len(func_ancestors)+1)} bwd: mean_percent: {stat_info_funcs_grouped.loc[backward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[backward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[backward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[backward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[backward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[backward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[backward_func_name,"min"]:.2f}')
-                    f.write(f'{"    " * (len(func_ancestors)+1)} fwd: mean_percent: {stat_info_funcs_grouped.loc[forward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[forward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[forward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[forward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[forward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[forward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[forward_func_name,"min"]:.2f}\n')
-                    f.write(f'{"    " * (len(func_ancestors)+1)} bwd: mean_percent: {stat_info_funcs_grouped.loc[backward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[backward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[backward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[backward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[backward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[backward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[backward_func_name,"min"]:.2f}\n')
+                    #print(f'{"    " * (len(func_ancestors)+1)} fwd: mean_percent: {stat_info_funcs_grouped.loc[forward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[forward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[forward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[forward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[forward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[forward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[forward_func_name,"min"]:.2f}')
+                    #print(f'{"    " * (len(func_ancestors)+1)} bwd: mean_percent: {stat_info_funcs_grouped.loc[backward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[backward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[backward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[backward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[backward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[backward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[backward_func_name,"min"]:.2f}')
+                    f.write(f'{"    " * (len(func_ancestors)+1)} fwd: mean_percent: {stat_info_funcs_grouped.loc[forward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[forward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[forward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[forward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[forward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[forward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[forward_func_name,"min"]:.2f}, count: {stat_info_funcs_grouped.loc[forward_func_name,"count"]:.2f}\n')
+                    f.write(f'{"    " * (len(func_ancestors)+1)} bwd: mean_percent: {stat_info_funcs_grouped.loc[backward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[backward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[backward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[backward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[backward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[backward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[backward_func_name,"min"]:.2f}, count:  {stat_info_funcs_grouped.loc[backward_func_name,"count"]:.2f}\n')

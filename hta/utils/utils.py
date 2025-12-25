@@ -278,7 +278,7 @@ def prepare_directory(directory_path, force_clear=False):
         # Create the target directory
         os.makedirs(directory_path)
     
-    time.sleep(6)
+    #time.sleep(6)
 
 def find_and_copy_files(source_directory, target_directory, suffix_list):
     """

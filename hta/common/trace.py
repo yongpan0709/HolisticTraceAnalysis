@@ -972,8 +972,10 @@ class MegatronPipelineParrallelGroupTrace(Trace):
             df.loc[df['s_name'].str.contains('recv_backward'), 'recv_next'] = -1
             df.loc[df['s_name'].str.contains('send_forward'), 'send_next'] = -1
 
-    def set_micro_batch_id(self):
-        for rank in self.get_ranks():
+    def set_micro_batch_id(self, ranks=None):
+        if ranks is None:
+            ranks = self.get_ranks()
+        for rank in ranks:
             self.set_self_microbatch_id(self.full_dfs[rank])
             self.set_recv_send_microbatch_id(self.full_dfs[rank])
             self.process_pipeline_start_end(rank, self.full_dfs[rank])
@@ -1120,8 +1122,10 @@ class MegatronPipelineParrallelGroupTrace(Trace):
         df['wait_time'] = df['kernel_span'] - df['comm_time']
 
     
-    def establish_p2p_link_on_adjacent_ranks(self):
-        rank_pairs = self.get_p2p_ranks_pairs(self.get_ranks())
+    def establish_p2p_link_on_adjacent_ranks(self, ranks=None):
+        if ranks is None:
+            ranks = self.get_ranks()
+        rank_pairs = self.get_p2p_ranks_pairs(ranks)
         self.traces_p2p_comm = {}
         for rank_prev, rank_next in rank_pairs:
             df_p2p_bidirection = self.get_p2p_trace_for_one_pair(rank_prev, rank_next)

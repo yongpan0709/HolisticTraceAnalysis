@@ -1,4 +1,4 @@
-from hta.trace_analysis import MegatronPipelineParallelGroupTraceAnalysis
+from hta.trace_megatron_pipeline_group_analysis import MegatronPipelineParallelGroupTraceAnalysis
 from hta.utils.parallel_state import get_3d_parallel_groups
 from hta.utils.utils import partition_files_across_directories, prepare_directory
 from hta.configs.config import logger
@@ -154,8 +154,8 @@ class DistributedMegatronTraceAnalysis:
             prepare_directory(self.log_dir, force_clear=True)
             prepare_directory(self.output_dir, force_clear=True)
             prepare_directory(self.stragglers_dir, force_clear=True)
-        self.comm.Barrier()
-        time.sleep(3)
+        #self.comm.Barrier()
+        #time.sleep(3)
     
     def setup_logging(self):
         log_filename = os.path.join(self.log_dir, f'log_rank_{self.rank}.log')
@@ -187,8 +187,9 @@ class DistributedMegatronTraceAnalysis:
                 self.all_pipeline_parallel_group_ranks, 
             )
 
-        self.comm.Barrier()
-        time.sleep(6)
+        #Todo: mpi run on multiple nodes may have issue here
+        #self.comm.Barrier()
+        #time.sleep(6)
         logger.info('Initialization of pipeline parallel group subdirectories completed.')
     
     def assign_analysis_tasks(self):
@@ -220,23 +221,24 @@ class DistributedMegatronTraceAnalysis:
             logger.info(f'Analyzer saved to {cache_path}')
         return analyzer
     
-    def process_single_pp_group(self, trace_dir):
+    def process_single_pp_group(self, pp_group_id, trace_dir):
         output_dir = os.path.join(trace_dir, 'output')
         prepare_directory(output_dir, force_clear=True)
         
+        logger.debug(f'Processing trace directory: {trace_dir} before load trace analyzer')
         analyzer_single_pp_group = self.load_trace_analyzer(trace_dir)
-        analyzer_single_pp_group.analyze_pipeline_parallel()
+        analyzer_single_pp_group.analyze_pipeline_parallel_per_group(pp_group_id)
         
         return analyzer_single_pp_group
     
     def analyze(self):
         self.analysis_list = []
-        for folder in self.assigned_folders:
-            analyzer_single_pp_group = self.process_single_pp_group(folder)
+        for pp_group_id, folder in enumerate(self.assigned_folders):
+            analyzer_single_pp_group = self.process_single_pp_group(pp_group_id, folder)
             self.analysis_list.append(analyzer_single_pp_group)
-        self.gather_infos_from_all_ranks()
+        #self.gather_infos_from_all_ranks()
         # self.analyze_anomalies()
-        self.post_process()
+        #self.post_process()
     
     def gather_infos_from_all_ranks(self):
         logger.info('Gathering information from all ranks.')

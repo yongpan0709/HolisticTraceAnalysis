@@ -68,7 +68,10 @@ def parallel_callgraph_create(rank_id, trace_file):
     t.decode_symbol_ids(use_shorten_name=False)
     cg = CallGraph(t)
     _, main_stack = cg.get_main_stack_on_rank(rank_id)
-    return rank_id, main_stack
+    full_df = main_stack.full_df.copy()
+    del cg
+    del t
+    return rank_id, full_df[full_df['s_cat'] == 'user_annotation' ]
 
 class MegatronPipelineParrallelGroupTrace():
     """MegatronPipelineParrallelGroupTrace class for Megatron-LM with Pipeline Parallelism group.
@@ -115,10 +118,10 @@ class MegatronPipelineParrallelGroupTrace():
             results = pool.starmap(parallel_callgraph_create, tasks)
             pool.close()
             pool.join()
-        for rank_id, main_stack in results:
+        for rank_id, main_stack_df in results:
             logger.debug(f"rank id: {rank_id}")
-            self.full_dfs[rank_id] = main_stack.full_df
-            #self.t.full_dfs[rank_id].to_csv(f'full_df-{rank_id}.csv')
+            self.full_dfs[rank_id] = main_stack_df
+            
         self.is_parsed_per_pp_group[pp_group_id] = True
 
         #self.pp_group_trace[pp_group_id] = Trace(

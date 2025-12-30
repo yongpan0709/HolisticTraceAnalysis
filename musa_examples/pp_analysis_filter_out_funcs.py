@@ -6,6 +6,7 @@ import re
 import os
 import time
 import multiprocessing as mp
+from trace_json_repair import fix_json_value_missing
 
 # filepath: /home/mccxadmin/Documents/py-projects/HolisticTraceAnalysis/filter-user-annotate.py
 # 加载 JSON 文件
@@ -34,6 +35,7 @@ FILTER_OUT_CAT_FUNCS = [
 ]
 def filter_out_funcs(file_path, redirect_new_trace_path):
     print(f'redirect_new_trace_path: {redirect_new_trace_path}')
+    fix_json_value_missing(file_path)
     with open(file_path, 'r') as file:  # 替换 'data.json' 为你的 JSON 文件路径
         data = json.load(file)
     dup_data = {}
@@ -51,7 +53,7 @@ def filter_out_funcs(file_path, redirect_new_trace_path):
 
     # 将结果写入新的 JSON 文件
     with open(redirect_new_trace_path, 'w') as file:
-        json.dump(dup_data, file)
+        json.dump(dup_data, file, indent='\t')
 
 if __name__ == "__main__":
     # 示例用法

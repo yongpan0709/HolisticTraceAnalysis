@@ -71,6 +71,8 @@ def parallel_callgraph_create(rank_id, trace_file):
     full_df = main_stack.full_df.copy()
     del cg
     del t
+    #Todo: ProfilerStep col kernel span has a wrong value 
+    full_df.loc[full_df['s_name'].str.contains(r'^ProfilerStep#.*'), 'kernel_span'] = full_df[full_df['s_name'].str.match(pat=r"^megatron/training/training.py\(\d+\): pretrain$")]['kernel_span'].values
     return rank_id, full_df[full_df['s_cat'] == 'user_annotation' ]
 
 class MegatronPipelineParrallelGroupTrace():
@@ -121,7 +123,6 @@ class MegatronPipelineParrallelGroupTrace():
         for rank_id, main_stack_df in results:
             logger.debug(f"rank id: {rank_id}")
             self.full_dfs[rank_id] = main_stack_df
-            
         self.is_parsed_per_pp_group[pp_group_id] = True
 
         #self.pp_group_trace[pp_group_id] = Trace(

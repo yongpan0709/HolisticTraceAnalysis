@@ -137,7 +137,7 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
                 output_df.loc[len(output_df)] = info_per_rank
 
         if save_path is not None:
-            output_df.to_csv(save_path, header=True, index=False)
+            output_df.to_csv(save_path, header=True, index=False, float_format='%.3f')
         #print(output_df)
         return output_df
 

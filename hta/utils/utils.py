@@ -3,10 +3,9 @@
 # LICENSE file in the root directory of this source tree.
 
 import multiprocessing as mp
-import re
 from enum import Enum
 from pathlib import Path
-from typing import Any, List, Tuple
+from typing import List, Tuple
 
 import pandas as pd
 import psutil
@@ -15,6 +14,11 @@ import sys
 import shutil
 from datetime import datetime
 import time
+from hta.common.types import (
+    CommunicateKernelGroupingPattern,
+    ComputeKernelGroupingPattern,
+    MemoryKernelGroupingPattern,
+)
 from hta.configs.config import logger
 
 
@@ -58,9 +62,6 @@ def normalize_path(path: str) -> str:
     return normalized_path
 
 
-NCCL_KERNEL_RE = re.compile(r"^nccl.*Kernel")
-
-
 def is_comm_kernel(name: str) -> bool:
     """
     Check if a given GPU kernel is a communication kernel.
@@ -71,10 +72,7 @@ def is_comm_kernel(name: str) -> bool:
     Returns:
         A boolean indicating if the kernel is a communication kernel.
     """
-    return NCCL_KERNEL_RE.match(name) is not None
-
-
-MEMORY_KERNEL_RE = re.compile(r"(^Memcpy)|(^Memset)|(^dma)")
+    return CommunicateKernelGroupingPattern.match(name)
 
 
 def is_memory_kernel(name: str) -> bool:
@@ -87,10 +85,7 @@ def is_memory_kernel(name: str) -> bool:
     Returns:
         A boolean indicating if the kernel is an IO kernel.
     """
-    return MEMORY_KERNEL_RE.match(name) is not None
-
-
-NCCL_COMPUTE_KERNEL_RE = re.compile(r"(^nccl.*Kernel)|(.*(Memcpy)|(Memset))|(.*Sync)")
+    return MemoryKernelGroupingPattern.match(name)
 
 
 def is_compute_kernel(name: str) -> bool:
@@ -101,7 +96,7 @@ def is_compute_kernel(name: str) -> bool:
     Returns:
         A boolean indicating if the kernel is a computation kernel.
     """
-    return not NCCL_COMPUTE_KERNEL_RE.match(name)
+    return ComputeKernelGroupingPattern.match(name)
 
 
 def is_computer_kernel(name: str) -> bool:
@@ -156,7 +151,7 @@ def shorten_name(name: str) -> str:
     This utility removes the functional arguments, template arguments, and return values
     to make the name easy to understand.
     """
-    if MEMORY_KERNEL_RE.match(name) is not None:
+    if is_memory_kernel(name):
         return name
 
     if name.find("<") < 0 and name.find("(") < 0:
@@ -243,16 +238,27 @@ def normalize_gpu_stream_numbers(df: pd.DataFrame) -> None:
         logger.error("No stream column found in the trace.")
         return
 
-    def _normalize_stream_number(stream_number: Any) -> int:
-        try:
-            return int(stream_number)
-        except ValueError:
-            return -1
+    df["stream"] = pd.to_numeric(df["stream"], errors="coerce").fillna(-1).astype(int)
 
-    df["stream"] = df.apply(
-        lambda r: _normalize_stream_number(r["stream"]),
-        axis=1,
-    )
+
+def get_value_from_dict(d: object, key: str, default: object = None) -> object:
+    """Get the value of a key from a dictionary.
+
+    Args:
+        d (dict[str, object]): a dictionary of nested key-value pairs.
+        key (str): the key in a dot format to get the value, e.g., "a.b.c".
+        default (object, optional): the default value if the key is not found. Defaults to None.
+
+    Returns:
+        object: the value of the key or the default value
+    """
+    keys = key.split(".")
+    for k in keys:
+        if isinstance(d, dict) and k in d:
+            d = d[k]
+        else:
+            return default
+    return d
 
 def prepare_directory(directory_path, force_clear=False):
     """

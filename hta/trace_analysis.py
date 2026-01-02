@@ -290,6 +290,37 @@ class TraceAnalysis:
             compress_other_kernels,
         )
 
+    def get_aten_op_kernels_and_delay(
+        self,
+        ranks: Optional[List[int]] = None,
+        sort_by: Optional[List[str]] = None,
+    ) -> Dict[int, pd.DataFrame]:
+        r"""
+        For each aten operator, this function finds the corresponding  kernels and the delay
+        between the aten operator and the first  kernel launch. The delay is measured in microseconds
+        (us). The delay is calculated as the difference between the start time of the aten operator
+        and the start time of the firs  kernel launch. The output is a table with the following columns:
+        Aten operator name, kernels associated with the aten operator, number of such aten op to kernel sequences,
+        delay between the aten operator and runtime launch of the first kernel, and the delay between the runtime
+        kernel launch to kernel execution on device.
+
+        Args:
+            ranks: the rank numbers on which the analysis was performed on
+            sort_by: the column name to sort the results by, default is "occurrence_count"
+
+        Returns:
+            Dict[int, pd.DataFrame]: The function returns a dictionary of dataframes. The key corresponds to the rank
+            and value is the DataFrame containing the path of kernels launch by aten op, the count number of each path,
+            the aten op launch delay and runtime delay.
+        """
+        if ranks is None:
+            ranks = [0]
+
+        if sort_by is None:
+            sort_by = ["occurrence_count"]
+
+        return CudaKernelAnalysis.get_aten_op_kernels_and_delay(self.t, ranks, sort_by)
+
     def get_cuda_kernel_launch_stats(
         self,
         ranks: Optional[List[int]] = None,
@@ -644,6 +675,7 @@ class TraceAnalysis:
         rank: int,
         annotation: str,
         instance_id: Union[Optional[int], Tuple[int, int]],
+        data_load_events: Optional[List[str]] = None,
     ) -> Tuple[CPGraph, bool]:
         r"""
         Perform critical path analysis for trace events within a rank.
@@ -666,6 +698,10 @@ class TraceAnalysis:
                         Defaults to the first instance.
                 (Tuple(int, int)) - considers a range of annotation instances start to end,
                         inclusive of both start and end instance.
+            data_load_events (List[str]): List of events (regex) to be considered as
+                data load events. Different traces may use different annotations to
+                indicate data loading, so we allow the caller to pass in the list.
+
         Returns:
             Tuple[CPGraph, bool]
                 A tuple of CPGraph object and a success or fail boolean value.
@@ -684,7 +720,7 @@ class TraceAnalysis:
            Please see the documentation of this PR on how to enable CUDA sync events in the trace.
         """
         return CriticalPathAnalysis.critical_path_analysis(
-            self.t, rank, annotation, instance_id
+            self.t, rank, annotation, instance_id, data_load_events=data_load_events
         )
 
     def overlay_critical_path_analysis(

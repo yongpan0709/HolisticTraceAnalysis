@@ -2,16 +2,26 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+
 from __future__ import annotations
 
 import multiprocessing as mp
-
+import os
 import queue
 import re
-from typing import Any, Dict, Iterable, List
+from typing import Dict, Iterable, List
 
 import pandas as pd
+from hta.common.types import (
+    CPU_EVENTS_CATEGORY_PATTERN,
+    GroupingPattern,
+    KERNEL_CATEGORY_PATTERN,
+    KERNEL_LAUNCH_CATEGORY_PATTERN,
+    MemoryKernelGroupingPattern,
+    ProfilerStepGroupingPattern,
+)
 
+from hta.configs.default_values import MAX_NUM_PROCESSES_SMALL
 from hta.utils.utils import shorten_name
 
 
@@ -22,7 +32,7 @@ class _SymbolCollector:
     implements a function object so that it allow the multiple processes to share the data.
     """
 
-    def __init__(self, q: queue.Queue[Any]):
+    def __init__(self, q: queue.Queue[str]) -> None:
         self.queue = q
 
     def __call__(self, symbols: Iterable[str]) -> None:
@@ -36,7 +46,8 @@ class TraceSymbolTable:
     """
     TraceSymbolTable stores the bidirectional symbol<-->id mapping for all traces.
     Because of potential races caused by multiprocessing, we serialize updates to the
-    TraceSymbolTable using a synchronize.lock.
+    TraceSymbolTable using a synchronize.lock. The table maintains both dictionary and
+    pandas Series representations for efficient lookups and DataFrame operations.
 
     We assume all read operations to this table by a Trace object occur after it adds all its symbols.
     Therefore, there is no need to lock the read access.
@@ -44,13 +55,25 @@ class TraceSymbolTable:
     Attributes:
         sym_table (List[str]) : a list of symbols.
         sym_index (Dict[str, int]) : a map from symbol to ID.
+        sym_index_series (pd.series): A Series representation for the symbol table.
+        sym_table_series (pd.Series): A Series representation for the symbol index.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.sym_table: List[str] = []
         self.sym_index: Dict[str, int] = {}
+        self._sym_index_series: pd.Series = pd.Series(self.sym_index, dtype="int64")
+        self._sym_table_series: pd.Series = pd.Series(self.sym_table, dtype="string")
+
+    def is_empty(self) -> bool:
+        return len(self.sym_table) == 0
 
     def add_symbols(self, symbols: Iterable[str]) -> None:
+        """Add new symbols to the table.
+
+        Args:
+            symbols: Iterable of symbol strings to add
+        """
         for s in symbols:
             if s not in self.sym_index:
                 idx = len(self.sym_table)
@@ -58,12 +81,17 @@ class TraceSymbolTable:
                 self.sym_index[s] = idx
 
     def add_symbols_mp(self, symbols_list: List[Iterable[str]]) -> None:
+        """Add symbols using multiprocessing for parallel collection.
+
+        Args:
+            symbols_list: List of symbol iterables to process in parallel
+        """
         m = mp.Manager()
-        shared_queue: queue.Queue[Any] = m.Queue()
+        shared_queue: queue.Queue[str] = m.Queue()
         collector = _SymbolCollector(shared_queue)
 
-        with mp.get_context("spawn").Pool(
-            min(mp.cpu_count(), len(symbols_list))
+        with mp.get_context("fork").Pool(
+            min(MAX_NUM_PROCESSES_SMALL, mp.cpu_count(), len(symbols_list))
         ) as pool:
             pool.map(collector, symbols_list)
             pool.close()
@@ -75,9 +103,22 @@ class TraceSymbolTable:
         self.add_symbols(all_symbols)
 
     def get_sym_id_map(self) -> Dict[str, int]:
+        """Get the symbol to ID mapping dictionary.
+
+        Returns:
+            Dictionary mapping symbol strings to their integer IDs.
+        """
+        return self.sym_index
+
+    def get_sym_index(self) -> Dict[str, int]:
         return self.sym_index
 
     def get_sym_table(self) -> List[str]:
+        """Get the list of symbols.
+
+        Returns:
+            List of symbol strings in order of their IDs.
+        """
         return self.sym_table
 
     def find_matches(self, patterns: List[str]) -> List[int]:
@@ -112,6 +153,141 @@ class TraceSymbolTable:
         # Find the names of matches
         return [s for s in self.sym_table if pattern.search(s)]
 
+    def _update_symbol_series(self) -> None:
+        if len(self.sym_table) != len(self._sym_table_series):
+            self._sym_table_series = pd.Series(self.sym_table)
+            self._sym_index_series = pd.Series(self.sym_index)
+
+    def get_sym_index_series(self) -> pd.Series:
+        self._update_symbol_series()
+        return self._sym_index_series
+
+    def get_sym_table_series(self) -> pd.Series:
+        self._update_symbol_series()
+        return self._sym_table_series
+
+    def get_symbol_ids(self, symbol_pattern: GroupingPattern) -> Dict[str, int]:
+        """Get the category ids of events in a trace dataframe."""
+        s_map = self.get_sym_index_series()
+        mask = s_map.index.str.match(symbol_pattern.pattern)
+        if symbol_pattern.inverse_match:
+            mask = ~mask
+        return s_map[mask].to_dict()
+
+    def get_symbol_names(self, symbol_ids: List[int]) -> Dict[int, str]:
+        """Get the category ids of events in a trace dataframe."""
+        s_table = self.get_sym_table_series()
+        mask = s_table.index.isin(symbol_ids)
+        return s_table[mask].to_dict()
+
+    def _to_csv_file(self, file_path: str) -> None:
+        """Save the symbol table to a CSV file"""
+        pd.DataFrame(data=self.sym_table, columns=["symbol"]).to_csv(
+            file_path, index=True
+        )
+
+    @staticmethod
+    def from_csv_file(file_path: str) -> "TraceSymbolTable":
+        """Read a TraceSymbolTable from a CSV file. The CSV file should contain at least a `symbol` column.
+
+        Args:
+            file_path (str): path to a csv file that contains the symbol table.
+
+        Returns:
+            TraceSymbolTable: the constructed TraceSymbolTable.
+        """
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File {file_path} does not exist.")
+
+        df = pd.read_csv(file_path)
+        if "symbol" not in df.columns:
+            raise ValueError(f"{file_path}: expect a column'symbol' in the csv")
+        symbol_table = TraceSymbolTable()
+        symbol_table.add_symbols(df["symbol"].tolist())
+        return symbol_table
+
+    @staticmethod
+    def combine_symbol_tables(tables: List["TraceSymbolTable"]) -> "TraceSymbolTable":
+        """Combine multiple symbol tables into one symbol table."""
+        result: TraceSymbolTable = TraceSymbolTable()
+        for t in tables:
+            result.add_symbols(t.get_sym_table())
+        return result
+
+    @staticmethod
+    def clone(symbol_table: "TraceSymbolTable") -> "TraceSymbolTable":
+        """Create a TraceSymbolTable by cloning <symbol_table>"""
+        tst: TraceSymbolTable = TraceSymbolTable()
+        tst.sym_table = symbol_table.sym_table.copy()
+        tst.sym_index = symbol_table.sym_index.copy()
+        return tst
+
+    @staticmethod
+    def create_from_df(df: pd.DataFrame) -> "TraceSymbolTable":
+        """Create a symbol table from a DataFrame's cat and name columns.
+
+        Creates a new symbol table containing all unique symbols found in the DataFrame's
+        'name' and 'cat' columns. The symbols are added in the order they appear.
+
+        Args:
+            df (pd.DataFrame): an input DataFrame which has columns `name` and `cat`.
+
+        Returns:
+            TraceSymbolTable: a symbol table containing all unique `name` and `cat` symbols in df.
+
+        Raise:
+            ValueError: when `df` doesn't have the `name` and `cat` columns or they are not string type.
+        """
+        if (
+            ("name" in df.columns)
+            and (df["name"].dtype.kind == "O")
+            and ("cat" in df.columns)
+            and (df["cat"].dtype == "O")
+        ):
+            symbols = set(df["cat"].unique()).union(set(df["name"].unique()))
+            symbol_table = TraceSymbolTable()
+            symbol_table.add_symbols(symbols)
+            return symbol_table
+        raise ValueError(
+            "Expect both name and cat columns of string types to be present in the dataframe"
+        )
+
+    @staticmethod
+    def create_from_symbol_id_map(symbol_id_map: Dict[str, int]) -> "TraceSymbolTable":
+        """Create a symbol table from the given symbol id map."""
+        max_id = max(symbol_id_map.values())
+        id_to_symbol_map = {v: k for (k, v) in symbol_id_map.items()}
+
+        tst = TraceSymbolTable()
+        tst.sym_table = [
+            id_to_symbol_map.get(i, f"Undefined-{i}") for i in range(max_id + 1)
+        ]
+        tst.sym_index.update({s: i for i, s in enumerate(tst.sym_table)})
+
+        return tst
+
+    def encode_df(self, df: pd.DataFrame) -> None:
+        """Encode the name and cat columns of a DataFrame with this symbol table."""
+        for col in ["name", "cat"]:
+            if col in df.columns and df[col].dtype.kind == "O":
+                df[col] = df[col].apply(lambda sym: self.sym_index[sym])
+
+    def decode_df(self, df: pd.DataFrame, create_new_columns: bool = True) -> None:
+        """Decode the name and cat columns of a DataFrame with this symbol table."""
+        for col in ["name", "cat"]:
+            if col in df.columns and df[col].dtype.kind == "i":
+                col_name = "s_" + col if create_new_columns else col
+                df[col_name] = df[col].apply(lambda idx: self.sym_table[idx])
+
+    def update_encoded_df(
+        self, df: pd.DataFrame, old_symbol_table: "TraceSymbolTable"
+    ) -> None:
+        """Update the cat and name columns of df that was encoded using old_symbol_table."""
+        new_map = self.get_sym_index()
+        old_table = old_symbol_table.get_sym_table()
+        for col in ["cat", "name"]:
+            df[col] = df[col].apply(lambda idx: new_map[old_table[idx]])
+
     def add_symbols_to_trace_df(self, trace_df: pd.DataFrame, col: str) -> None:
         """
         Take a trace dataframe and expand symbols in one of its columns.
@@ -126,62 +302,82 @@ class TraceSymbolTable:
             lambda i: self.sym_table[i] if (0 <= i < len(self.sym_table)) else ""
         )
 
-    @staticmethod
-    def create_symbol_table_from_df(df: pd.DataFrame) -> TraceSymbolTable:
-        """Create a symbol table from a DataFrame's cat and name columns.
-
-        Args:
-            df (pd.DataFrame): an input DataFrame.
-
-        Returns:
-            TraceSymbolTable: a symbol table containing all unique `name` and `cat` symbols in df.
-
-        Raise:
-            ValueError: when one of the follow two conditions happens:
-                (1) `df` doesn't have the `name` and `cat` columns; or
-                (2) they are not string type.
-        """
-        if (
-            ("name" in df.columns)
-            and (df.dtypes["name"] == "object")
-            and ("cat" in df.columns)
-            and (df.dtypes["cat"] == "object")
-        ):
-            symbols = set(df["cat"].unique()).union(set(df["name"].unique()))
-            symbol_table = TraceSymbolTable()
-            symbol_table.add_symbols(symbols)
-            return symbol_table
-        raise ValueError(
-            "Expect both name and cat columns of string types to be present in the dataframe"
-        )
-
     # Use a number lower than -1 as a sentinel for missing symbols
     NULL: int = -128
 
-    def get_operator_or_cuda_runtime_query(self) -> str:
-        """Returns a SQL query you can pass to trace dataframe query()
+    def get_operator_or_cuda_runtime_mask(self, df: pd.DataFrame) -> pd.Series:
+        """Returns a boolean mask you can use with pandas dataframes
         to filter events that are CUDA runtime events or operators."""
         cpu_op_id = self.sym_index.get("cpu_op")
         cuda_runtime_id = self.sym_index.get("cuda_driver", self.NULL)
         cuda_driver_id = self.sym_index.get("cuda_runtime", self.NULL)
-        return f"(cat == {cpu_op_id} or cat == {cuda_runtime_id} or cat == {cuda_driver_id})"
+        return (
+            (df["cat"] == cpu_op_id)
+            | (df["cat"] == cuda_runtime_id)
+            | (df["cat"] == cuda_driver_id)
+        )
 
-    def get_runtime_launch_events_query(self) -> str:
-        """Returns a SQL query you can pass to trace dataframe query()
+    def get_runtime_launch_events_mask(self, df: pd.DataFrame) -> pd.Series:
+        """Returns a boolean mask you can use with pandas dataframes
         to filter events that are CUDA runtime kernel and memcpy launches."""
         cudaLaunchKernel_id = self.sym_index.get("cudaLaunchKernel", self.NULL)
         cudaLaunchKernelExC_id = self.sym_index.get("cudaLaunchKernelExC", self.NULL)
         cuLaunchKernel_id = self.sym_index.get("cuLaunchKernel", self.NULL)
+        cuLaunchKernelEx_id = self.sym_index.get("cuLaunchKernelEx", self.NULL)
         cudaMemcpyAsync_id = self.sym_index.get("cudaMemcpyAsync", self.NULL)
         cudaMemsetAsync_id = self.sym_index.get("cudaMemsetAsync", self.NULL)
         mtiaLaunchKernel_id = self.sym_index.get(
             "runFunction - job_prep_and_submit_for_execution", self.NULL
         )
-        return (
-            f"((name == {cudaMemsetAsync_id}) or (name == {cudaMemcpyAsync_id}) or "
-            f" (name == {cudaLaunchKernel_id}) or (name == {cudaLaunchKernelExC_id})"
-            f" or (name == {cuLaunchKernel_id}) or (name == {mtiaLaunchKernel_id})) and (index_correlation > 0)"
+        rocmLaunchKernel_id = self.sym_index.get("hipLaunchKernel", self.NULL)
+        rocmExtModuleLaunchKernel_id = self.sym_index.get(
+            "hipExtModuleLaunchKernel", self.NULL
         )
+        rocmMemsetAsync_id = self.sym_index.get("hipMemsetAsync", self.NULL)
+        rocmMemcpyAsync_id = self.sym_index.get("hipMemcpyAsync", self.NULL)
+        rocmMemcpyWithStream_id = self.sym_index.get("hipMemcpyWithStream", self.NULL)
+
+        # Create a mask for each event type and combine with OR
+        name_mask = (
+            (df["name"] == cudaMemsetAsync_id)
+            | (df["name"] == cudaMemcpyAsync_id)
+            | (df["name"] == cudaLaunchKernel_id)
+            | (df["name"] == cudaLaunchKernelExC_id)
+            | (df["name"] == cuLaunchKernel_id)
+            | (df["name"] == mtiaLaunchKernel_id)
+            | (df["name"] == rocmLaunchKernel_id)
+            | (df["name"] == rocmExtModuleLaunchKernel_id)
+            | (df["name"] == rocmMemcpyAsync_id)
+            | (df["name"] == rocmMemsetAsync_id)
+            | (df["name"] == rocmMemcpyWithStream_id)
+            | (df["name"] == cuLaunchKernelEx_id)
+        )
+
+        # Add the index_correlation > 0 condition
+        return name_mask & (df["index_correlation"] > 0)
+
+    def get_events_mask(self, df: pd.DataFrame, events: list[str] | None) -> pd.Series:
+        """Returns a boolean mask you can use with pandas dataframes
+        to filter for events that are in the given events list (regex supported)."""
+        if events is None:
+            return pd.Series(False, index=df.index)
+        event_ids = self.find_matches(events)
+        return df["name"].isin(event_ids)
+
+    def get_cpu_event_cat_ids(self) -> List[int]:
+        return list(self.get_symbol_ids(CPU_EVENTS_CATEGORY_PATTERN).values())
+
+    def get_gpu_kernel_cat_ids(self) -> List[int]:
+        return list(self.get_symbol_ids(KERNEL_CATEGORY_PATTERN).values())
+
+    def get_profiler_step_ids(self) -> List[int]:
+        return list(self.get_symbol_ids(ProfilerStepGroupingPattern).values())
+
+    def get_memory_name_ids(self) -> List[int]:
+        return list(self.get_symbol_ids(MemoryKernelGroupingPattern).values())
+
+    def get_kernel_launch_ids(self) -> List[int]:
+        return list(self.get_symbol_ids(KERNEL_LAUNCH_CATEGORY_PATTERN).values())
 
 
 def decode_symbol_id_to_symbol_name(

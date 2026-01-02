@@ -59,11 +59,6 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         logger.info('establish_p2p_link_on_adjacent_ranks')
         self.t.establish_p2p_link_on_adjacent_ranks(pp_group_id=pp_group_id) 
         
-        # logger.info('calculate_comm_volume_for_trace_df')
-        # self.t.traces = self.t.parallel_apply(calculate_comm_volume_for_trace_df)
-        # logger.info('calculate_flops_for_trace_df')
-        # self.t.traces = self.t.parallel_apply(calculate_flops_for_trace_df)
-        
         # logger.info('construct call graphs after calculating bandwidth and flops')
         # call_graph = CallGraph(self.t)
         # logger.info('print final call graph')

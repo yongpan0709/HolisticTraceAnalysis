@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import enum
+
 import gzip
 import io
 import json
@@ -29,12 +31,22 @@ from hta.configs.parser_config import (
     ParserBackend,
     ParserConfig,
 )
-from hta.utils.utils import normalize_gpu_stream_numbers
+from hta.utils.utils import get_value_from_dict, normalize_gpu_stream_numbers
 
 # from memory_profiler import profile
 
 
 MetaData = Dict[str, Any]
+
+
+# meta data keys
+class MetaDataKey(enum.Enum):
+    DEVICE_TYPE = "device_type"
+
+    def __str__(self) -> str:
+        return self.value
+
+
 _TRACE_PARSING_BACKEND: Optional[ParserBackend] = None
 
 IJSON_INSTRS = """ Install ijson with pip by using
@@ -46,6 +58,36 @@ Also please install yajl for optimal speed. You will need an installation of yaj
 
 Check the backend with: python3 -c "import ijson; print(ijson.backend)" output = yajl2_c
 For more details see https://pypi.org/project/ijson/#performance-tips, https://anaconda.org/anaconda/yajl, https://pypi.org/project/yajl/"""
+
+
+def infer_gpu_type(
+    metadata: Optional[MetaData] = None, name_set: dict[str, int] = {}
+) -> str:
+    """
+    Infer the GPU type from a trace metadata or it's symbold ID map (name_set).
+
+    Args:
+        df (pd.DataFrame): The trace events DataFrame.
+        metadata (Optional[MetaData]): The metadata of the trace.
+
+    Returns:
+        str: The inferred GPU type.
+    """
+    if metadata is not None:
+        backend = get_value_from_dict(metadata, "distributedInfo.backend", None)
+        if (
+            backend is not None
+            and isinstance(backend, str)
+            and "mtia:hccl" in str(backend)
+        ):
+            return "MTIA"
+    if "cudaLaunchKernel" in name_set:
+        return "NVIDIA GPU"
+    if "hipLaunchKernel" in name_set:
+        return "AMD GPU"
+    if "runFunction - job_prep_and_submit_for_execution" in name_set:
+        return "MTIA"
+    return "UNKNOWN GPU"
 
 
 def _auto_detect_parser_backend() -> ParserBackend:
@@ -122,7 +164,7 @@ def _open_trace_file(trace_file_path: str) -> io.BufferedIOBase:
 
 
 # @profile
-def _parse_trace_events_ijson(trace_file_path: str) -> pd.DataFrame:
+def _parse_trace_events_ijson(trace_file_path: str, cfg: ParserConfig) -> pd.DataFrame:
     """
     Parse the trace file using iterative json.
 
@@ -138,12 +180,12 @@ def _parse_trace_events_ijson(trace_file_path: str) -> pd.DataFrame:
 
     t_start = time.perf_counter()
     with _open_trace_file(trace_file_path) as fh:
-
         generator = ijson.items(fh, "traceEvents.item", use_float=True)
-
-        # Ignore python function tracer
-        # TODO make this filter configuration in ParserConfig
-        df = pd.DataFrame(e for e in generator if e.get("cat") != "python_function")
+        if len(cfg.skip_event_types) > 0:
+            generator = (
+                e for e in generator if e.get("cat") not in cfg.skip_event_types
+            )
+        df = pd.DataFrame(generator)
 
     t_end = time.perf_counter()
     logger.warning(
@@ -191,24 +233,21 @@ def _parse_trace_events_ijson_batched(
 
     t_start = time.perf_counter()
     with _open_trace_file(trace_file_path) as fh:
-        # TODO make events to skip configurable in ParserConfig
-        generator = (
-            e
-            for e in ijson.items(fh, "traceEvents.item", use_float=True)
-            if e.get("cat") != "python_function"
-        )
+        generator = (e for e in ijson.items(fh, "traceEvents.item", use_float=True))
+        if len(cfg.skip_event_types) > 0:
+            generator = (
+                e for e in generator if e.get("cat") not in cfg.skip_event_types
+            )
         if compress_on_fly:
             generator = (trim_event(e) for e in generator)
 
-        # XXX Currently using 1000 as batch size.
-        batch_size = 1000
         batch = []
         dfs = []
 
         # Iterate over filtered dictionaries and append to DataFrame in batches
         for item in generator:
             batch.append(item)
-            if len(batch) == batch_size:
+            if len(batch) == cfg.batch_size:
                 dfs.append(pd.DataFrame(batch))
                 batch = []
 
@@ -244,6 +283,7 @@ def _compress_df(
     Args:
         df (pd.DataFrame): the input DataFrame
         cfg (Optional[ParserConfig]): an object to customize how to parse/compress the trace.
+        metadata (MetaData, Optional): the metadata of the trace.
 
     Returns:
         Tuple[pd.DataFrame, TraceSymbolTable]
@@ -402,10 +442,13 @@ def _parse_trace_dataframe_ijson(
             f"{(t_end - t_start)/1000000:.2f} milli seconds"
         )
 
+    logger.info(
+        f"Parsing using ijson batched = {batched}, skip_events = {cfg.skip_event_types}"
+    )
     if batched:
         df = _parse_trace_events_ijson_batched(trace_file_path, cfg, compress_on_fly)
     else:
-        df = _parse_trace_events_ijson(trace_file_path)
+        df = _parse_trace_events_ijson(trace_file_path, cfg)
 
     round_down_time_stamps(df)
 
@@ -465,6 +508,10 @@ def parse_trace_dataframe(
         )
     else:
         raise ValueError(f"unexpected or unsupported parser = {parser_backend}")
+
+    # infer device type in trace metadata
+    device_type = infer_gpu_type(meta, local_symbol_table.get_sym_id_map())
+    meta[str(MetaDataKey.DEVICE_TYPE)] = device_type
 
     t_end = time.perf_counter()
     logger.warning(
@@ -572,16 +619,15 @@ def parse_metadata_ijson(fh: io.BufferedIOBase) -> MetaData:
         if prefix == cur_key and event == "start_array":
             meta[cur_key] = []
             # For deviceProperties this should be start_map or end_array
-            _, _event_, _ = next(trace_parser)
-            assert _event_ in [
-                "start_map",
-                "end_array",
-            ], f"We only support an array with map elements like deviceProperties, (prefix, event, value) = ({prefix}, {event}, {value})"
+            _, _event_, _event_value = next(trace_parser)
             while _event_ != "end_array":
-                nested_map = {}
-                nested_map = handle_nested_map(trace_parser, "", nested_map)
-                meta[cur_key].append(nested_map)
-                _, _event_, _ = next(trace_parser)
+                if _event_ == "start_map":
+                    nested_map = {}
+                    nested_map = handle_nested_map(trace_parser, "", nested_map)
+                    meta[cur_key].append(nested_map)
+                else:
+                    meta[cur_key].append((_event_, _event_value))
+                _, _event_, _event_value = next(trace_parser)
             continue
 
         # Handle top level simple key values

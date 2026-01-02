@@ -309,7 +309,7 @@ class MegatronPipelineParrallelGroupTrace():
             #df_p2p_bidirection.to_csv(f'p2p_trace_rank_{rank_prev}_{rank_next}.csv', index=False)
             self.traces_p2p_comm[rank_prev] = df_p2p_bidirection
         
-        self.trace_df_p2p_flow_events = Trace.combine_into_one_trace(self.traces_p2p_comm)
+        self.trace_df_p2p_flow_events = self.combine_into_one_trace(self.traces_p2p_comm)
     
     def save_traces_with_p2p_comm(self, save_path, traces=None, trace_df_p2p_flow_events=None, meta_data=None):
         if traces is None:
@@ -318,10 +318,44 @@ class MegatronPipelineParrallelGroupTrace():
             trace_df_p2p_flow_events = self.trace_df_p2p_flow_events
         #if meta_data is None:
         #    meta_data = self.meta_data
-        trace_df_all_ranks = Trace.combine_into_one_trace(traces)
+        trace_df_all_ranks = self.combine_into_one_trace(traces)
         save_trace_df_to_file(trace_df_all_ranks, save_path, trace_df_p2p_flow_events)
     
     def set_rank_info(self):
         for rank in self.get_ranks():
             self.traces[rank]['rank'] = rank    
     
+    def parallel_apply(self, function, need_rank=False):
+        if need_rank:
+            inputs = list(self.traces.items())
+        else:
+            inputs = list(self.traces.values())
+        results = apply_function_for_parallel(function, inputs)
+        keys = list(self.traces.keys())
+        return {key: result for key, result in zip(keys, results)}
+
+    def save_traces(self, file_path, ranks=None):
+        if ranks is None:
+            effective_ranks = self.get_ranks()
+        else:
+            effective_ranks = set(ranks).intersection(set(self.get_ranks()))
+        inputs = []
+        for rank in effective_ranks:
+            file_path_with_rank = add_rank_to_filename(file_path, rank)
+            inputs.append([self.traces[rank], file_path_with_rank, None, self.meta_data[rank]])
+        apply_function_for_parallel(save_trace_df_to_file, inputs)
+    
+    @staticmethod
+    def combine_into_one_trace(traces_dict: dict):
+        all_trace_dfs = []
+        for rank, trace_df in traces_dict.items():
+            trace_df['rank'] = rank
+            all_trace_dfs.append(trace_df)
+        trace_df = pd.concat(all_trace_dfs, ignore_index=True)
+        return trace_df
+    
+    @staticmethod
+    def display_traces_info(traces):
+        first_trace_df = next(iter(traces.values()))
+        logger.info(f'total {len(traces)} traces, and each trace has {len(first_trace_df)} items')
+        logger.info(first_trace_df['s_cat'].value_counts())

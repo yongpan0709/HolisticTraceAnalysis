@@ -1,3 +1,4 @@
+DEFAULT_EVENT_ARGS_YAML: str = """
 version: 1.0.0
 
 AVAILABLE_ARGS:
@@ -259,8 +260,4 @@ AVAILABLE_ARGS:
     raw_name: batchId
     value_type: String
     default_value: ""
-  inference::pre_grad_nodes:
-    name: pre_grad_nodes
-    raw_name: pre_grad_nodes
-    value_type: Object
-    default_value: []
+"""

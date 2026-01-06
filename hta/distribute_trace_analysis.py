@@ -1,5 +1,5 @@
 from hta.trace_megatron_pipeline_group_analysis import MegatronPipelineParallelGroupTraceAnalysis
-from hta.utils.parallel_state import get_3d_parallel_groups
+from hta.utils.parallel_state import RankGenerator
 from hta.utils.utils import partition_files_across_directories, prepare_directory
 from hta.configs.config import logger
 
@@ -88,16 +88,30 @@ def gather_data(comm, send_data, use_p2p=True):
     return recv_data, send_counts, recv_displs
     
 class DistributedMegatronTraceAnalysis:
-    def __init__(self, trace_dir, tensor_parallel_size, data_parallel_size, pipeline_parallel_size):
+    def __init__(self, trace_dir, tp: int, ep: int, dp: int, pp: int, cp: int =1, order: str ="tp-cp-ep-dp-pp"):
         self.trace_dir = trace_dir
-        self.tensor_parallel_size = tensor_parallel_size
-        self.data_parallel_size = data_parallel_size
-        self.pipeline_parallel_size = pipeline_parallel_size
-        
+        self.tensor_parallel_size = tp
+        self.data_parallel_size = dp
+        self.pipeline_parallel_size = pp
+        self.expert_model_parallel_size = ep
+        self.context_parallel_size = cp
+
         self.comm = MPI.COMM_WORLD
         self.rank = self.comm.Get_rank()
         self.world_size = self.comm.Get_size()
         self.processor_name = MPI.Get_processor_name()
+        self.expert_decoder_rank_generator = RankGenerator(
+            tp=tp,
+            ep=ep,
+            dp=dp,
+            pp=pp,
+            cp=cp,
+            order=order,
+            rank_offset=0,
+        )
+        self.all_data_parallel_group_ranks = self.expert_decoder_rank_generator.get_ranks('dp')
+        self.all_tensor_parallel_group_ranks = self.expert_decoder_rank_generator.get_ranks('tp')
+        self.all_pipeline_parallel_group_ranks = self.expert_decoder_rank_generator.get_ranks('pp')
         self.setup_dirs()
         self.setup_logging()
         self.init_pp_group_sub_dirs()
@@ -169,14 +183,6 @@ class DistributedMegatronTraceAnalysis:
 
     def init_pp_group_sub_dirs(self):
         logger.info('Initializing pipeline parallel group subdirectories.')
-        self.all_data_parallel_group_ranks, \
-        self.all_tensor_parallel_group_ranks, \
-        self.all_pipeline_parallel_group_ranks = get_3d_parallel_groups(
-            self.tensor_parallel_size, 
-            self.pipeline_parallel_size, 
-            self.data_parallel_size
-        )
-        
         trace_dir_for_pp_group = os.path.join(self.trace_dir_pp_group, 'pp_group')
         self.all_pp_group_sub_dirs = [f'{trace_dir_for_pp_group}_{i}' for i in range(len(self.all_pipeline_parallel_group_ranks))]
         
@@ -215,7 +221,7 @@ class DistributedMegatronTraceAnalysis:
                 analyzer = pickle.load(f)
             logger.info(f'Analyzer loaded from {cache_path}')
         else:
-            analyzer = MegatronPipelineParallelGroupTraceAnalysis(trace_dir=trace_dir, data_parallel_size=self.data_parallel_size, tensor_parallel_size=self.tensor_parallel_size, pipeline_parallel_size=self.pipeline_parallel_size)
+            analyzer = MegatronPipelineParallelGroupTraceAnalysis(trace_dir=trace_dir, data_parallel_size=self.data_parallel_size, tensor_parallel_size=self.tensor_parallel_size, pipeline_parallel_size=self.pipeline_parallel_size, expert_model_parallel_size=self.expert_model_parallel_size, context_parallel_size=self.context_parallel_size)
             with open(cache_path, 'wb') as f:
                 pickle.dump(analyzer, f)
             logger.info(f'Analyzer saved to {cache_path}')

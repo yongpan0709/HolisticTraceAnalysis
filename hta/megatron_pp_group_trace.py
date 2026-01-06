@@ -29,7 +29,7 @@ from hta.common.trace_filter import NameFilter
 from hta.utils.parallel_state import get_next_pipeline_rank, is_first_stage, is_last_stage
 from hta.utils.utils import add_rank_to_filename, apply_function_for_parallel
 from hta.common.trace_call_graph import CallGraph
-from hta.utils.parallel_state import get_3d_parallel_groups
+from hta.utils.parallel_state import RankGenerator
 from hta.common.trace_file import get_trace_files
 
 # Todo: func list
@@ -75,6 +75,7 @@ def parallel_callgraph_create(rank_id, trace_file):
     full_df.loc[full_df['s_name'].str.contains(r'^ProfilerStep#.*'), 'kernel_span'] = full_df[full_df['s_name'].str.match(pat=r"^megatron/training/training.py\(\d+\): pretrain$")]['kernel_span'].values
     return rank_id, full_df[full_df['s_cat'] == 'user_annotation' ]
 
+# Todo: Does the pp group trace class need to know information about other tp, ep, dp groups?
 class MegatronPipelineParrallelGroupTrace():
     """MegatronPipelineParrallelGroupTrace class for Megatron-LM with Pipeline Parallelism group.
     Models are getting larger; load one pp group at a time to avoid OOM (out of memory) and slow parsing errors.
@@ -83,27 +84,34 @@ class MegatronPipelineParrallelGroupTrace():
         self,
         trace_files: Optional[Dict[int, str]] = None,
         trace_dir: str = DEFAULT_TRACE_DIR,
-        data_parallel_size = -1,
-        tensor_parallel_size = -1,
-        pipeline_parallel_size = -1
+        dp = -1,
+        tp = -1,
+        pp = -1,
+        ep = -1,
+        cp: int =1, order: str ="tp-cp-ep-dp-pp",
     ) -> None:
         if trace_files is None:
             assert os.path.exists(trace_dir), f"Trace directory {trace_dir} does not exist!"
         self.trace_files = get_trace_files(trace_dir)
         assert self.trace_files is not None and len(self.trace_files) > 0, f"No trace files found in directory {trace_dir}!"
         self.trace_dir = trace_dir
-        self.data_parallel_size = data_parallel_size
-        self.tensor_parallel_size = tensor_parallel_size
-        self.pipeline_parallel_size = pipeline_parallel_size
-        self.all_data_parallel_group_ranks, \
-        self.all_tensor_parallel_group_ranks, \
-        self.all_pipeline_parallel_group_ranks = get_3d_parallel_groups(
-            self.tensor_parallel_size, 
-            self.pipeline_parallel_size, 
-            self.data_parallel_size
+        self.tensor_parallel_size = tp
+        self.data_parallel_size = dp
+        self.pipeline_parallel_size = pp
+        self.expert_model_parallel_size = ep
+        self.context_parallel_size = cp
+        self.expert_decoder_rank_generator = RankGenerator(
+            tp=tp,
+            ep=ep,
+            dp=dp,
+            pp=pp,
+            cp=cp,
+            order=order,
+            rank_offset=0,
         )
-        logger.debug(f'Data parallel groups: {self.all_data_parallel_group_ranks}')
-        logger.debug(f'Pipeline parallel groups: {self.all_pipeline_parallel_group_ranks}')
+        self.all_data_parallel_group_ranks = self.expert_decoder_rank_generator.get_ranks('dp')
+        self.all_tensor_parallel_group_ranks = self.expert_decoder_rank_generator.get_ranks('tp')
+        self.all_pipeline_parallel_group_ranks = self.expert_decoder_rank_generator.get_ranks('pp')
         self.with_gpu_kernel = False
         self.traces_comm_only : Dict[int, pd.DataFrame] = {}
         #self.pp_group_trace: Dict[int, Trace] = {}

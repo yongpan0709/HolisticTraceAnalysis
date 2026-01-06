@@ -29,11 +29,13 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         data_parallel_size = -1,
         tensor_parallel_size = -1,
         pipeline_parallel_size = -1,
+        expert_model_parallel_size = -1,
+        context_parallel_size = -1,
     ):
         cfg = ParserConfig.get_default_cfg()
         #cfg.add_args(ParserConfig.ARGS_INPUT_SHAPE)
         ParserConfig.set_default_cfg(cfg)
-        self.t = MegatronPipelineParrallelGroupTrace(trace_files, trace_dir, data_parallel_size, tensor_parallel_size, pipeline_parallel_size)
+        self.t = MegatronPipelineParrallelGroupTrace(trace_files, trace_dir, dp=data_parallel_size, tp=tensor_parallel_size, pp=pipeline_parallel_size, ep=expert_model_parallel_size, cp=context_parallel_size)
         self.output_dir = os.path.join(trace_dir, 'output')
         # Todo: set force clear to true
         prepare_directory(self.output_dir, force_clear=False)

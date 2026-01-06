@@ -14,7 +14,9 @@ FILTER_OUT_FUNCS = [
     ".*__init__.*",
     ".*__enter__.*",
     ".*__exit__.*",
-    ".*__call__.*",
+    "torch/.*__call__.*",
+    "transformer_engine/.*__call__.*",
+    "triton/.*__call__.*",
     "torch/utils/data/_utils/pin_memory.py\(\d+\):.*",
     "<built-in .*>",
     "musaEventQuery",
@@ -58,23 +60,35 @@ def filter_out_funcs(file_path, redirect_new_trace_path):
 if __name__ == "__main__":
     # 示例用法
     base_dir = "../"
-    trace_dir = str(Path(base_dir).joinpath("2025-12-21_002019_fp8_balancing/iteration_8"))
-    redirect_path = '2025-12-21_002019_fp8_balancing-0-32'
-    ranks = [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800, 832, 864, 896, 928, 960]
+    trace_dir = str(Path(base_dir).joinpath("20260106-iter8"))
+    redirect_path = '20260106-3h-iter8-filtered'
+    pp_groups = [
+        [0, 8, 16],
+        [1, 9, 17],
+        [2, 10, 18],
+        [3, 11, 19],
+        [4, 12, 20],
+        [5, 13, 21],
+        [6, 14, 22],
+        [7, 15, 23],
+    ]
+    #ranks = [0, 8, 16]
     trace_files = get_trace_files(trace_dir)
-    num_procs = min(mp.cpu_count(), len(ranks))
-    tasks = []
     t0 = time.perf_counter()
     print(f'start ts: {t0}')
-    for rank in ranks:
-        trace_file = trace_files[rank]
-        filename = os.path.basename(trace_file)
-        redirect_new_trace_path = os.path.join(base_dir, redirect_path, filename)
-        tasks.append((trace_file, redirect_new_trace_path))
-    #print(f'tasks: {tasks}')
-    with mp.get_context("fork").Pool(num_procs) as pool:
-        results = pool.starmap(filter_out_funcs, tasks)
-        pool.close()
-        pool.join()
+    for ranks in pp_groups:
+        tasks = []
+        for rank in ranks:
+            #print(f'rank {rank} in ranks:{ranks}')
+            trace_file = trace_files[rank]
+            filename = os.path.basename(trace_file)
+            redirect_new_trace_path = os.path.join(base_dir, redirect_path, filename)
+            tasks.append((trace_file, redirect_new_trace_path))
+        num_procs = min(mp.cpu_count(), len(ranks))
+        print(f'tasks: {tasks}')
+        with mp.get_context("fork").Pool(num_procs) as pool:
+            results = pool.starmap(filter_out_funcs, tasks)
+            pool.close()
+            pool.join()
     t1 = time.perf_counter()
     print(f"calculating critical path took {t1 - t0:2f} seconds")

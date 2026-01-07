@@ -177,20 +177,24 @@ class MegatronPipelineParrallelGroupTrace():
         trace_df.loc[trace_df['s_name'].str.contains('send_backward', regex=False), 'send_prev'] = trace_df['micro_batch_id_backward']
     
     # Use: func annotations
-    def process_pipeline_start_end(self, rank, df):
-        if is_first_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
-            df.loc[df['s_name'].str.contains('recv_forward'), 'recv_prev'] = -1
-            df.loc[df['s_name'].str.contains('send_backward'), 'send_prev'] = -1
-        if is_last_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
-            df.loc[df['s_name'].str.contains('recv_backward'), 'recv_next'] = -1
-            df.loc[df['s_name'].str.contains('send_forward'), 'send_next'] = -1
+    def process_pipeline_start(self, df):
+        #if is_first_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
+        df.loc[df['s_name'].str.contains('recv_forward'), 'recv_prev'] = -1
+        df.loc[df['s_name'].str.contains('send_backward'), 'send_prev'] = -1
+
+    def process_pipeline_end(self, df):
+        #if is_last_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
+        df.loc[df['s_name'].str.contains('recv_backward'), 'recv_next'] = -1
+        df.loc[df['s_name'].str.contains('send_forward'), 'send_next'] = -1
 
     def set_micro_batch_id(self, pp_group_id=0):
         ranks = self.all_pipeline_parallel_group_ranks[pp_group_id]
+        logger.info(f'In set micro batch id: ranks: {ranks}')
         for rank in ranks:
             self.set_self_microbatch_id(self.full_dfs[rank])
             self.set_recv_send_microbatch_id(self.full_dfs[rank])
-            self.process_pipeline_start_end(rank, self.full_dfs[rank])
+        self.process_pipeline_start(self.full_dfs[ranks[0]])
+        self.process_pipeline_end(self.full_dfs[ranks[-1]])
     
     def filter_comm_only_traces(self, pp_group_id=0):
         for rank in self.all_pipeline_parallel_group_ranks[pp_group_id]:
@@ -198,11 +202,11 @@ class MegatronPipelineParrallelGroupTrace():
     
     def get_p2p_ranks_pairs(self, ranks):
         if len(ranks) < 2: return []
+        # Todo: double check
         ranks_sorted = sorted(ranks)
         p2p_devices_pairs = []
-        for i in range(len(ranks_sorted) - 1):
-            if(ranks[i+1] == get_next_pipeline_rank(ranks[i], self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size)):
-                p2p_devices_pairs.append([ranks[i], ranks[i+1]])
+        for i in range(len(ranks) - 1):
+            p2p_devices_pairs.append([ranks[i], ranks[i+1]])
         return p2p_devices_pairs 
 
     def get_useful_trace_df(self, trace_df):

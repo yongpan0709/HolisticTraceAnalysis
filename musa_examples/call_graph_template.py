@@ -1,15 +1,32 @@
 from collections import defaultdict
-from typing import Dict, List,Set
+from typing import Dict, List, Set
 import copy
 import pandas as pd
+from musa_basic_kernel_info import calculate_CheckpointWithoutOutputFunction, calculate_groupedlinear_flops
 
 DUP_LABEL = "@dup@"
 SHAPE_LABEL = "@shape@"
 ANNOTATE_LABEL = [DUP_LABEL, SHAPE_LABEL] 
 
 SHAPE_POSITION = {
-    '_AllToAll': 1,
-    '_GroupedLinear': 2
+    # CheckpointWithoutOutputFunction is RMSNorm_2's parents
+    "nn.Module: RMSNorm_\d+": {
+        "type": "BW",
+        "ShapeFrom": r"CheckpointWithoutOutputFunction",
+        "formula": calculate_CheckpointWithoutOutputFunction,
+    },
+    "transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm": {
+        "type": "TFLOPS",
+        "ShapeFrom": r"nn.Module: TE(Row|Column)ParallelGroupedLinear_0", # _GroupedLinear
+        "formula": calculate_groupedlinear_flops,
+    }
+}
+SHAPE_TO_FLOPS_FUNC =  {
+    "transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm": "fused_multi_quantize",
+}
+
+SHAPE_TO_VOLUME_FUNC = {
+    "nn.Module: RMSNorm_\d+": "RMSNorm forward",
 }
 
 output_template_to_file = r"""
@@ -41,13 +58,13 @@ pretrain_deepseekv2.py\(\d+\): forward_step
                     transformer_engine/pytorch/module/grouped_linear.py\(\d+\): forward @dup@
                         _GroupedLinear @dup@ @shape@
                             <built-in method fused_multi_quantize of PyCapsule object at 0x\w+> @dup@
-                            transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@
+                            transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@ @shape@
                 megatron/core/fusions/fused_bias_swiglu.py\(\d+\): bias_swiglu_impl
                 nn.Module: TERowParallelGroupedLinear_0
                     transformer_engine/pytorch/module/grouped_linear.py\(\d+\): forward @dup@
                         _GroupedLinear @dup@ @shape@
                             <built-in method fused_multi_quantize of PyCapsule object at 0x\w+> @dup@
-                            transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@
+                            transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@ @shape@
             megatron/core/transformer/moe/token_dispatcher.py\(\d+\): token_unpermutation
                 megatron/core/transformer/moe/moe_utils.py\(\d+\): sort_chunks_by_idxs @dup@
                 megatron/core/tensor_parallel/mappings.py\(\d+\): all_to_all @dup@
@@ -85,8 +102,12 @@ pretrain_deepseekv2.py\(\d+\): forward_step
 """
 
 output_template_to_file_debug = r"""
-megatron/core/transformer/transformer_layer.py\(\d+\): _forward_attention
-    megatron/core/tensor_parallel/random.py\(\d+\): checkpoint @dup@
+nn.Module: RMSNorm_\d+ @shape@
+nn.Module: TEGroupedMLP_0
+    nn.Module: TEColumnParallelGroupedLinear_0
+        transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@ @shape@
+    nn.Module: TERowParallelGroupedLinear_0
+        transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@ @shape@
 """
 
 output_template_to_file_kimi = r"""
@@ -99,15 +120,16 @@ pretrain_kimi.py\(\d+\): <module>
                         nn.Module: LanguageModelEmbedding_0
                     nn.Module: TransformerBlock_0
                         megatron/core/transformer/transformer_layer.py\(\d+\): __call__
-                            nn.Module: TransformerLayer_0
+                            nn.Module: TransformerLayer_\d+
                                 megatron/core/transformer/transformer_layer.py\(\d+\): _forward_attention
-                                    megatron/core/tensor_parallel/random.py\(\d+\): checkpoint @dup@
-                                    nn.Module: MLASelfAttention_0
+                                    megatron/core/tensor_parallel/random.py\(\d+\): checkpoint
+                                        nn.Module: RMSNorm_\d+ @shape@
+                                    nn.Module: MLASelfAttention_\d+
                                         megatron/core/tensor_parallel/random.py\(\d+\): checkpoint @dup@
                                     megatron/core/fusions/fused_bias_dropout.py\(\d+\): _bias_dropout_add @dup@
                                 megatron/core/transformer/transformer_layer.py\(\d+\): _forward_mlp
-                                    nn.Module: MLP_0
-                                        nn.Module: TELayerNormColumnParallelLinear_2
+                                    nn.Module: MLP_\d+
+                                        nn.Module: TELayerNormColumnParallelLinear_\d+
                                         megatron/core/fusions/fused_bias_swiglu.py\(\d+\): bias_swiglu_impl
                                         nn.Module: TERowParallelLinear_1
                                     megatron/core/tensor_parallel/random.py\(\d+\): checkpoint @dup@
@@ -122,12 +144,13 @@ pretrain_kimi.py\(\d+\): <module>
                                                 megatron/core/transformer/moe/token_dispatcher.py\(\d+\): dispatch_postprocess
                                                 nn.Module: TEGroupedMLP_0
                                                     nn.Module: TEColumnParallelGroupedLinear_0
+                                                        transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@ @shape@
                                                     megatron/core/transformer/moe/experts.py\(\d+\): bias_act_func
                                                     nn.Module: TERowParallelGroupedLinear_0
+                                                        transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@ @shape@
                                                 megatron/core/transformer/moe/token_dispatcher.py\(\d+\): combine_preprocess
                                             megatron/core/transformer/moe/moe_layer.py\(\d+\): combine
                                     megatron/core/fusions/fused_bias_dropout.py\(\d+\): _bias_dropout_add @dup@
-                        nn.Module: RMSNorm_2
                     megatron/core/models/gpt/gpt_model.py\(\d+\): _postprocess
                         nn.Module: ColumnParallelLinear_0
                         megatron/core/models/common/language_module/language_module.py\(\d+\): compute_language_model_loss
@@ -169,6 +192,7 @@ def extract_dup_or_shape_func_name_from_template(output_template: str) -> (Set[s
 
         Has_SHAPE_LABEL = False
         if SHAPE_LABEL in line:
+            line = line.replace(SHAPE_LABEL, '')
             Has_SHAPE_LABEL = True
 
         func_name = line.strip()

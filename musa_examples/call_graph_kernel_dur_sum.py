@@ -10,7 +10,8 @@ import numpy as np
 import pandas as pd
 from collections import deque
 from call_graph_template import extract_func_name_from_template, extract_dup_or_shape_func_name_from_template, output_template_to_file, SHAPE_POSITION, set_pandas_display_options, output_template_to_file_kimi, output_template_to_file_debug
-
+import pickle
+import re
 
 def get_backward_duration(df, cg, rank, forward_index): 
     # forward_index  = df[df['name'] == forward_sym_id].index
@@ -89,6 +90,51 @@ def extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name):
             shape_info[forward_func_name]['example'] = df.loc[func_index[0], 'input_dims']
     return shape_info
 
+def extract_shape_from_parents_to_tflops_or_bw(func_name, df, func_mapping_node_index, need_shape_func_name, rank, cg, shape_position):
+    tflop_bw_mapping_index: Dict[str, pd.Series] = defaultdict(pd.Series)
+    df['shape'] = df['input_dims']
+    df['comm_volume'] = 0.0
+    df['tflop'] = 0.0
+    df['TFLOPS'] = 0.0
+    df['BW'] = 0.0
+
+    for forward_func_name, _ in func_name:
+        if forward_func_name.split('@')[0] in need_shape_func_name:
+            func_index = func_mapping_node_index[forward_func_name]
+            if len(func_index) == 0:
+                continue
+            index_array = []
+            for index, row in df[df.index.isin(func_index)].iterrows(): 
+                cur_node_index = index
+                pid, tid = row['pid'], row['tid']
+                parent_index = cg.rank_to_stacks[rank][CallStackIdentity(rank, pid, tid)].get_parent(cur_node_index)
+                while parent_index >= 0:
+                    if re.match(shape_position[forward_func_name.split('@')[0]]["ShapeFrom"], df.at[cur_node_index, 's_name']):
+                        print(f"Found shape for {forward_func_name} from parent func {df.at[cur_node_index, 's_name']} at index {cur_node_index} with input dims {df.at[cur_node_index, 'input_dims']}\n")
+                        formula_func = shape_position[forward_func_name.split('@')[0]]["formula"]
+                        df.at[index, 'shape'] = df.at[cur_node_index, 'input_dims']
+                        if shape_position[forward_func_name.split('@')[0]]["type"] == "TFLOPS":
+                            df.at[index, 'tflop'] = formula_func(df.loc[cur_node_index, 'input_dims'],  df.at[cur_node_index, 's_name'])
+                            if df.at[index, 'tflop'] >= 0 and row['kernel_span'] > 0:
+                                df.at[index, 'TFLOPS'] = df.at[index, 'tflop']/(row['kernel_span']/1000.0)
+                                index_array.append(index)
+                            else:
+                                logger.warning(f"TFLOPS calculation got invalid tflop {df.at[index, 'tflop']} or kernel_span {row['kernel_span']} for func {forward_func_name} at index {index}")
+                        elif shape_position[forward_func_name.split('@')[0]]["type"] == "BW":
+                            df.at[index, 'comm_volume'] = formula_func(df.at[cur_node_index, 'input_dims'], df.at[cur_node_index, 'input_type'])
+                            if df.at[index, 'comm_volume'] >= 0 and row['kernel_span'] > 0:
+                                df.at[index, 'BW'] = df.at[index, 'comm_volume']/(row['kernel_span']/1000.0)
+                                index_array.append(index)
+                            else:
+                                logger.warning(f"BW calculation got invalid comm_volume {df.at[index, 'comm_volume']} or kernel_span {row['kernel_span']} for func {forward_func_name} at index {index}")
+                        break
+                    else:
+                        cur_node_index = parent_index
+                        pid, tid = df[df.index == cur_node_index][['pid', 'tid']].values[0]
+                        parent_index = cg.rank_to_stacks[rank][CallStackIdentity(rank, pid, tid)].get_parent(cur_node_index)
+            tflop_bw_mapping_index[forward_func_name] = pd.Series(index_array)
+    return tflop_bw_mapping_index
+
 def cal_dur_percent(row, fwd_total_dur_mean, bwd_total_dur_mean):
     if row.name.endswith('-bwd'):
         return row['mean']*row['count']/bwd_total_dur_mean
@@ -99,13 +145,15 @@ def cal_dur_percent(row, fwd_total_dur_mean, bwd_total_dur_mean):
 if __name__ == "__main__":
     import time
     base_dir = "../"
-    trace_dir = str(Path(base_dir).joinpath("kimi-trace"))
+    trace_dir = str(Path(base_dir).joinpath("20260107-iter16-filtered"))
     cfg = ParserConfig.get_default_cfg()
     # config for extracting shape info
     cfg.add_args(ParserConfig.ARGS_INPUT_SHAPE)
     ParserConfig.set_default_cfg(cfg)
     trace_files = get_trace_files(trace_dir)
     for rank, trace_file in trace_files.items():
+        if rank != 8:
+            continue
         # HTA starts from here
         t = Trace(trace_files={rank: trace_file}, trace_dir="")
         t.load_traces()
@@ -117,15 +165,16 @@ if __name__ == "__main__":
         cg = CallGraph(t)
         t1 = time.perf_counter()
         print(f"Rank {rank}, CallGraph took {t1 - t0:.2f} seconds")
-        df = cg.call_stacks[-1].full_df
-        # df.to_csv(f"./bs1-1005-full_df_{rank}_debug.csv", index=False)
-        #break
+        #df = cg.call_stacks[-1].full_df
+        _, main_stack = cg.get_main_stack_on_rank(rank)
+        df = main_stack.full_df
         dup_func_name, need_shape_func_name = extract_dup_or_shape_func_name_from_template(output_template_to_file_kimi)
         func_name = extract_func_name_from_template(output_template_to_file_kimi)
         stat_info_funcs_grouped = pd.DataFrame()
         func_mapping_node_index: Dict[str, List[np.float64]] = defaultdict(list)
 
         for forward_func_name, func_ancestors in func_name:
+            print(f"Processing function: {forward_func_name}")
             if forward_func_name.split('@')[0] not in dup_func_name:
                 fwd_df = get_forward_duration_uniq(df, forward_func_name.split('@')[0])
             else:
@@ -139,40 +188,39 @@ if __name__ == "__main__":
             bwd_dur = calculate_statistics(bwd_df, forward_func_name+'-bwd')
             stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, fwd_dur, bwd_dur], axis=0)
 
-        shape_info = extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name)
+        tflop_bw_mapping_index = extract_shape_from_parents_to_tflops_or_bw(func_name, df, func_mapping_node_index, need_shape_func_name, rank, cg, SHAPE_POSITION)
+        #with open(f"./full_tflops_mapping_index_{rank}.pkl", 'wb') as f:
+        #    pickle.dump(tflop_bw_mapping_index, f)
+        #cache_path ='./full_tflops_analyzer_cache.pkl'
+        #with open(cache_path, 'wb') as f:
+        #    pickle.dump(df, f)
+        #df.to_csv(f"./full_df_{rank}_tflops.csv", index=False)
         (root_func_name, _) = func_name[0]
         fwd_total_dur_mean = stat_info_funcs_grouped[stat_info_funcs_grouped.index == root_func_name]['mean'].values[0]
         bwd_total_dur_mean = stat_info_funcs_grouped[stat_info_funcs_grouped.index == root_func_name+'-bwd']['mean'].values[0]
         stat_info_funcs_grouped['mean_percent'] = 0.0
         stat_info_funcs_grouped['mean_percent'] = stat_info_funcs_grouped.apply(lambda row: cal_dur_percent(row, fwd_total_dur_mean, bwd_total_dur_mean), axis=1)
 
-        shape_info = extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name)
-        with open(f"./kimi-{rank}.txt", "w") as f:
+        with open(f"./kimi-{rank}-main-stack.txt", "w") as f:
             for forward_func_name, func_ancestors in func_name:
-                if forward_func_name.split('@')[0] in need_shape_func_name:
-                    if len(shape_info[forward_func_name]['example']) >= SHAPE_POSITION[forward_func_name.split('@')[0]]:
-                        shape_dim = shape_info[forward_func_name]['example'][:SHAPE_POSITION[forward_func_name.split('@')[0]]]
-                        shape_dim[0][0] = int(shape_info[forward_func_name]['data'].mean())
-                        if SHAPE_POSITION[forward_func_name.split('@')[0]] == 2:
-                            dims = set({shape_dim[0][0], shape_dim[0][1], shape_dim[1][0], shape_dim[1][1]})
-                            m,n,k = dims
-                            mfu = 2*m*n*k/stat_info_funcs_grouped.loc[forward_func_name,"mean"]*1000/(1e12)/458
-                            print(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}, mfu: {mfu:.3f}')
-                            f.write(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}, mfu: {mfu:.3f}\n')
-                        else:
-                            m,n = shape_dim[0]
-                            bw_usage = 2*m*n/stat_info_funcs_grouped.loc[forward_func_name,"mean"]*1000/(1024**3)
-                            print(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}, bw_usage: {bw_usage:.3f}')
-                            f.write(f'{"    " * len(func_ancestors)}{forward_func_name}   mean: {shape_dim}, bw_usage: {bw_usage:.3f}\n')
-                    else:
-                        print(f"No shape info of func name: {forward_func_name}")
+                if forward_func_name in tflop_bw_mapping_index:
+                    index_series = tflop_bw_mapping_index[forward_func_name]
+                    df_subset = df[df.index.isin(index_series)]
+                    f.write(f'{"    " * len(func_ancestors)}{forward_func_name}   ')
+                    if SHAPE_POSITION[forward_func_name.split('@')[0]]["type"] == "TFLOPS":
+                        tflops_mean = df_subset['TFLOPS'].mean()
+                        #print(f": {forward_func_name}, tflops_mean: {tflops_mean}")
+                        f.write(f"    tflops_mean: {tflops_mean:.2f} Tflops, q_25: {df_subset['TFLOPS'].quantile(.25):.2f}, q_50: {df_subset['TFLOPS'].quantile(.5):.2f}, q_75: {df_subset['TFLOPS'].quantile(.75):.2f}, count: {len(df_subset)}\n")
+                    elif  SHAPE_POSITION[forward_func_name.split('@')[0]]["type"] == "BW":
+                        bw_mean = df_subset['BW'].mean()
+                        f.write(f"    bw_mean: {bw_mean:.2f} GB/s, q_25: {df_subset['BW'].quantile(.25):.2f}, q_50: {df_subset['BW'].quantile(.5):.2f}, q_75: {df_subset['BW'].quantile(.75):.2f}, count: {len(df_subset)}\n")
+                    file_name = forward_func_name.replace('\\', '').replace('+', '').replace(':', '').replace(' ', '').replace('/', '_')
+                    df_subset.to_csv(f"./full_df_{rank}_{file_name}_tflops_bw.csv", columns=['index', 's_name', 'shape', 'tflop', 'comm_volume', 'TFLOPS', 'BW'], index=False)
                 else:
                     print(f'{"    " * len(func_ancestors)}{forward_func_name}')
                     f.write(f'{"    " * len(func_ancestors)}{forward_func_name}\n')
 
                 if forward_func_name in stat_info_funcs_grouped.index:
                     backward_func_name = forward_func_name + '-bwd'
-                    #print(f'{"    " * (len(func_ancestors)+1)} fwd: mean_percent: {stat_info_funcs_grouped.loc[forward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[forward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[forward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[forward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[forward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[forward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[forward_func_name,"min"]:.2f}')
-                    #print(f'{"    " * (len(func_ancestors)+1)} bwd: mean_percent: {stat_info_funcs_grouped.loc[backward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[backward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[backward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[backward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[backward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[backward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[backward_func_name,"min"]:.2f}')
                     f.write(f'{"    " * (len(func_ancestors)+1)} fwd: mean_percent: {stat_info_funcs_grouped.loc[forward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[forward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[forward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[forward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[forward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[forward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[forward_func_name,"min"]:.2f}, count: {stat_info_funcs_grouped.loc[forward_func_name,"count"]:.2f}\n')
                     f.write(f'{"    " * (len(func_ancestors)+1)} bwd: mean_percent: {stat_info_funcs_grouped.loc[backward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[backward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[backward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[backward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[backward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[backward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[backward_func_name,"min"]:.2f}, count:  {stat_info_funcs_grouped.loc[backward_func_name,"count"]:.2f}\n')

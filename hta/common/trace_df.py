@@ -223,6 +223,16 @@ def save_trace_df_to_file(df: pd.DataFrame, output_file: str, trace_df_p2p_comm_
 def _prod(shape):
     return reduce(operator.mul, shape, 1)
 
+bytes_dict = {
+    'c10::Half': 2,
+    'c10::Float': 4,
+    'c10::Int': 1,
+    'c10::BFloat16': 2,
+    'long int': 8,
+    'float': 4,
+    'unsigned char': 1
+}
+
 def get_calculate_flops_function(op_name):
     def calculate_attention_flops(input_dims):
         q_shape = input_dims[0]
@@ -244,7 +254,7 @@ def get_calculate_flops_function(op_name):
     def calculate_noop_flops(*args):
         return -1
 
-    if op_name == 'aten::matmul':
+    if op_name == 'aten::matmul' or op_name == 'aten::mul':
         return calculate_matmul_flops
     elif op_name == 'aten::scaled_dot_product_attention':
         return calculate_attention_flops
@@ -258,15 +268,6 @@ def get_calculate_comm_volumn_function(op_name):
     DP_SIZE = 2
     PP_SIZE = 4
     def get_num_of_bytes(type):
-        bytes_dict = {
-            'c10::Half': 2,
-            'c10::Float': 4,
-            'c10::Int': 1,
-            'c10::BFloat16': 2,
-            'long int': 8,
-            'float': 4,
-            'unsigned char': 1
-        }
         if type not in bytes_dict: 
             print(f'type {type} not in bytes_dict, is set to 1B')
         return bytes_dict.get(type, 1)

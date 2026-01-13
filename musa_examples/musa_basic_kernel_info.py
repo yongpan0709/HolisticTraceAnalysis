@@ -18,10 +18,8 @@ def _prod(shape):
 def calculate_groupedlinear_flops(input_dims, shape_from_func):
     if len(input_dims) < 14:
         if "TERowParallelGroupedLinear_0" in shape_from_func: # corresponding to grouped gemm 1
-            print(f"Using {shape_from_func} with inputdims: {input_dims} input dims for TERowParallelGroupedLinear_0")
             input_dims = [[32768, 2048], [], [], [], [], [], [], [], [], [], [], [], [], [7168, 2048]]
         elif "TEColumnParallelGroupedLinear_0" in shape_from_func: # corresponding to grouped gemm 0 
-            print(f"Using {shape_from_func} with inputdims: {input_dims} input dims for TEColumnParallelGroupedLinear_0")
             input_dims = [[32768, 7168], [], [], [], [], [], [], [], [], [], [], [], [], [4096, 7168]]
         else:
             return 0
@@ -37,4 +35,4 @@ def get_num_of_bytes(type):
 
 def calculate_CheckpointWithoutOutputFunction(input_dims, input_type):
     volume = _prod(input_dims[0]) * get_num_of_bytes(input_type[0]) * 2 # read and write
-    return volume / (1024 ** 3)  # GB
+    return volume / (1024 ** 4)  # TB

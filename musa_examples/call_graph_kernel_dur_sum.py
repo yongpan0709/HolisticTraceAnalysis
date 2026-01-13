@@ -116,14 +116,14 @@ def extract_shape_from_parents_to_tflops_or_bw(func_name, df, func_mapping_node_
                         if shape_position[forward_func_name.split('@')[0]]["type"] == "TFLOPS":
                             df.at[index, 'tflop'] = formula_func(df.loc[cur_node_index, 'input_dims'],  df.at[cur_node_index, 's_name'])
                             if df.at[index, 'tflop'] >= 0 and row['kernel_span'] > 0:
-                                df.at[index, 'TFLOPS'] = df.at[index, 'tflop']/(row['kernel_span']/1000.0)
+                                df.at[index, 'TFLOPS'] = df.at[index, 'tflop']/(row['kernel_span']/1000.0/1000.0) # convert us to s
                                 index_array.append(index)
                             else:
                                 logger.warning(f"TFLOPS calculation got invalid tflop {df.at[index, 'tflop']} or kernel_span {row['kernel_span']} for func {forward_func_name} at index {index}")
                         elif shape_position[forward_func_name.split('@')[0]]["type"] == "BW":
                             df.at[index, 'comm_volume'] = formula_func(df.at[cur_node_index, 'input_dims'], df.at[cur_node_index, 'input_type'])
                             if df.at[index, 'comm_volume'] >= 0 and row['kernel_span'] > 0:
-                                df.at[index, 'BW'] = df.at[index, 'comm_volume']/(row['kernel_span']/1000.0)
+                                df.at[index, 'BW'] = df.at[index, 'comm_volume']/(row['kernel_span']/1000.0/1000.0) # convert us to s
                                 index_array.append(index)
                             else:
                                 logger.warning(f"BW calculation got invalid comm_volume {df.at[index, 'comm_volume']} or kernel_span {row['kernel_span']} for func {forward_func_name} at index {index}")
@@ -215,7 +215,7 @@ if __name__ == "__main__":
                         bw_mean = df_subset['BW'].mean()
                         f.write(f"    bw_mean: {bw_mean:.2f} GB/s, q_25: {df_subset['BW'].quantile(.25):.2f}, q_50: {df_subset['BW'].quantile(.5):.2f}, q_75: {df_subset['BW'].quantile(.75):.2f}, count: {len(df_subset)}\n")
                     file_name = forward_func_name.replace('\\', '').replace('+', '').replace(':', '').replace(' ', '').replace('/', '_')
-                    df_subset.to_csv(f"./full_df_{rank}_{file_name}_tflops_bw.csv", columns=['index', 's_name', 'shape', 'tflop', 'comm_volume', 'TFLOPS', 'BW'], index=False)
+                    df_subset.to_csv(f"./kernel_{rank}_{file_name}_tflops_bw.csv", columns=['index', 's_name', 'kernel_span', 'shape', 'tflop', 'comm_volume', 'TFLOPS', 'BW'], index=False)
                 else:
                     print(f'{"    " * len(func_ancestors)}{forward_func_name}')
                     f.write(f'{"    " * len(func_ancestors)}{forward_func_name}\n')

@@ -24,9 +24,29 @@ def calculate_groupedlinear_flops(input_dims, shape_from_func):
         else:
             return 0
     shape = input_dims[0]
-    n = input_dims[13][0]
-    macs = _prod(shape) * n
-    return 2 * macs/ 1e12
+    n = input_dims[16][0]
+    macs = _prod(shape) * n * 2
+    return macs/ 1e12
+
+def calculate_linear_flops(input_dims, shape_from_func):
+    #print(f"input_dims {input_dims}, shape_from_func: {shape_from_func}")
+    macs = 0
+    if shape_from_func.startswith("_LayerNormLinear"):
+        shape = input_dims[0][:3]
+        m = input_dims[3][0]
+        macs = _prod(shape) * m * 2
+    elif shape_from_func.startswith("_Linear") or shape_from_func.startswith("RouterGatingLinearFunction") or shape_from_func.startswith("LinearWithGradAccumulationAndAsyncCommunication"):
+        shape = input_dims[0]
+        m = input_dims[1][0]
+        macs = _prod(shape) * m * 2
+ 
+    return macs/ 1e12
+
+def calculate_scaled_dot_product_attention_flash_musa_flops(input_dims, shape_from_func):
+    #shape = input_dims[0]
+    #m = input_dims[1][0]
+    #macs = _prod(shape) * m
+    return 2
 
 def get_num_of_bytes(type):
     if type not in BYTES_DICT: 

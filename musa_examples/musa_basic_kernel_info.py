@@ -43,10 +43,19 @@ def calculate_linear_flops(input_dims, shape_from_func):
     return macs/ 1e12
 
 def calculate_scaled_dot_product_attention_flash_musa_flops(input_dims, shape_from_func):
-    #shape = input_dims[0]
-    #m = input_dims[1][0]
-    #macs = _prod(shape) * m
-    return 2
+    macs = 0
+    if shape_from_func.startswith("scaled_dot_product_attention_flash_musa"):
+    #[[batch=1, nheads=64, seq_q_len=4096, qk_head_dim=192], [1, 64, seq_kv_len 4096, qk_head_dim=192], [1, 64, 4096, v_head_dim=128]]
+        batch_size = input_dims[0][0]
+        nheads = input_dims[0][1]
+        seq_len = input_dims[0][2]
+        qk_head_dim = input_dims[0][3]
+        v_head_dim = input_dims[2][3]
+        macs = 2 * batch_size * nheads * (seq_len**2) * (qk_head_dim + v_head_dim)
+    else:
+        
+    return macs/ 1e12
+
 
 def get_num_of_bytes(type):
     if type not in BYTES_DICT: 

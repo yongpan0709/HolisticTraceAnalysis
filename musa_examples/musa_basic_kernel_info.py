@@ -53,7 +53,8 @@ def calculate_scaled_dot_product_attention_flash_musa_flops(input_dims, shape_fr
         v_head_dim = input_dims[2][3]
         macs = 2 * batch_size * nheads * (seq_len**2) * (qk_head_dim + v_head_dim)
     else:
-        
+        # Todo: add attention flops calculation for backward pass
+        return 0
     return macs/ 1e12
 
 

@@ -14,40 +14,6 @@ import pickle
 import re
 from musa_basic_kernel_info import calculate_CheckpointWithoutOutputFunction, calculate_groupedlinear_flops, calculate_linear_flops, calculate_scaled_dot_product_attention_flash_musa_flops, calculate_linear_bw, calculate_groupedlinear_bw
 
-def get_backward_duration(df, cg, rank, forward_index): 
-    # forward_index  = df[df['name'] == forward_sym_id].index
-    forward_children_with_bwd_id: Dict[np.int64, List[np.int64]] = defaultdict(list)
-    """
-    Todo: refact to void checking children and grand-children funcs
-    """
-    for forward_as_parent in forward_index:
-        parents = deque()
-        parents.append(forward_as_parent)
-        while len(parents) > 0:
-            cur_node = parents.popleft()
-            cur_node_fwdbwd_index = df.loc[cur_node, 'fwdbwd_index']
-            if cur_node_fwdbwd_index > 0:
-                cur_node_fwdbwd_num_kernels = df.loc[cur_node_fwdbwd_index, 'num_kernels']
-                if cur_node_fwdbwd_num_kernels > 0:
-                    forward_children_with_bwd_id[forward_as_parent].append(cur_node_fwdbwd_index)
-            else:
-                cur_callStackNode = cg.rank_to_nodes[rank].get(cur_node)
-                cur_node_children = cur_callStackNode.children
-                if len(cur_node_children) > 0:
-                    for child in cur_node_children:
-                        child_type = df.loc[child, 's_cat']
-                        if child_type not in ['kernel']:
-                            parents.append(child)
-    
-    backward_info: Dict[np.int64, np.float64] = defaultdict(np.float64)
-    for forward_as_parent, bwd_children_indices in forward_children_with_bwd_id.items():
-        bwd_children = df[df['index'].isin(bwd_children_indices)]
-        first_kernel_start = bwd_children['first_kernel_start'].min()
-        last_kernel_end = bwd_children['last_kernel_end'].max()
-        backward_info[forward_as_parent] = (last_kernel_end - first_kernel_start)
-    backward_stat_info = pd.DataFrame.from_dict(backward_info, orient='index', columns=['kernel_span'])
-    return backward_stat_info
-
 def get_forward_duration_uniq(df, forward_func_name):
     node_index = df[df['s_name'].str.match(pat=r"^"+forward_func_name+r"$")].index
     return df[df['index'].isin(node_index)]
@@ -62,20 +28,6 @@ def get_forward_duration_dup(df, forward_func_name, func_ancestors, cg, rank, fu
             node_index.append(index)
     # print("dup node index: ", node_index)
     return df[df['index'].isin(node_index)]
-
-def calculate_statistics(df: pd.DataFrame, func_name: str, calculate_col_name: str = 'kernel_span'): #, fwd_bwd: str = 'fwd'):
-    df[calculate_col_name] = df[calculate_col_name]/1000.0
-    df = df[df[calculate_col_name] > 0]
-    df_dur = pd.DataFrame({
-                        'mean': df[calculate_col_name].mean(),
-                        'q_25': df[calculate_col_name].quantile(.25),
-                        'q_50': df[calculate_col_name].quantile(.5),
-                        'q_75': df[calculate_col_name].quantile(.75),
-                        'max':  df[calculate_col_name].max(),
-                        'min':  df[calculate_col_name].min(),
-                        'var':  df[calculate_col_name].var(),
-                        'count': df[calculate_col_name].count()}, index=[func_name], columns=['mean', 'q_25', 'q_50', 'q_75', 'max', 'min', 'var', 'count'])
-    return df_dur
 
 def extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name):
     shape_info: Dict[str, Dict[str, pd.Series]] = defaultdict(lambda: defaultdict(pd.Series))
@@ -93,11 +45,6 @@ def extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name):
 
 def extract_shape_from_parents_to_tflops_or_bw_in_fwd(func_name, df, func_mapping_node_index, need_shape_func_name, rank, cg, shape_position):
     tflop_bw_mapping_index: Dict[str, pd.Series] = defaultdict(pd.Series)
-    df['shape'] = df['input_dims']
-    df['comm_volume'] = 0.0
-    df['tflop'] = 0.0
-    df['TFLOPS'] = 0.0
-    df['BW'] = 0.0
 
     for forward_func_name, _ in func_name:
         if forward_func_name.split('@')[0] in need_shape_func_name:
@@ -111,23 +58,10 @@ def extract_shape_from_parents_to_tflops_or_bw_in_fwd(func_name, df, func_mappin
                 parent_index = cg.rank_to_stacks[rank][CallStackIdentity(rank, pid, tid)].get_parent(cur_node_index)
                 while parent_index >= 0:
                     if re.match(shape_position[forward_func_name.split('@')[0]]["ShapeFrom"], df.at[cur_node_index, 's_name']):
-                        #print(f"Found shape for {forward_func_name} from parent func {df.at[cur_node_index, 's_name']} at index {cur_node_index} with input dims {df.at[cur_node_index, 'input_dims']}\n")
-                        formula_func = shape_position[forward_func_name.split('@')[0]]["formula"]
+                        # print(f"Found shape for {forward_func_name} from parent func {df.at[cur_node_index, 's_name']} at index {cur_node_index} with input dims {df.at[cur_node_index, 'input_dims']}\n")
                         #df.at[index, 'shape'] = df.at[cur_node_index, 'input_dims']
-                        if shape_position[forward_func_name.split('@')[0]]["type"] == "TFLOPS":
-                            df.at[index, 'shape'], df.at[index, 'tflop'] = formula_func(df.loc[cur_node_index, 'input_dims'],  df.at[cur_node_index, 's_name'])
-                            if df.at[index, 'tflop'] >= 0 and row['kernel_span'] > 0:
-                                df.at[index, 'TFLOPS'] = df.at[index, 'tflop']/(row['kernel_span']/1000.0/1000.0) # convert us to s
-                                index_array.append(index)
-                            else:
-                                logger.warning(f"TFLOPS calculation got invalid tflop {df.at[index, 'tflop']} or kernel_span {row['kernel_span']} for func {forward_func_name} at index {index}")
-                        elif shape_position[forward_func_name.split('@')[0]]["type"] == "BW":
-                            df.at[index, 'shape'], df.at[index, 'comm_volume'] = formula_func(df.at[cur_node_index, 'input_dims'], df.at[cur_node_index, 'input_type'], df.at[cur_node_index, 's_name'])
-                            if df.at[index, 'comm_volume'] >= 0 and row['kernel_span'] > 0:
-                                df.at[index, 'BW'] = df.at[index, 'comm_volume']/(row['kernel_span']/1000.0/1000.0) # convert us to s
-                                index_array.append(index)
-                            else:
-                                logger.warning(f"BW calculation got invalid comm_volume {df.at[index, 'comm_volume']} or kernel_span {row['kernel_span']} for func {forward_func_name} at index {index}")
+                        _calculate_tflops_or_bw(df, index, cur_node_index, forward_func_name, shape_position)
+                        index_array.append(index)
                         break
                     else:
                         cur_node_index = parent_index
@@ -136,14 +70,35 @@ def extract_shape_from_parents_to_tflops_or_bw_in_fwd(func_name, df, func_mappin
             tflop_bw_mapping_index[forward_func_name] = pd.Series(index_array)
     return tflop_bw_mapping_index
 
+def _dfs_traverse(cg, rank, node_id, forward_func_name, df, matched_nodes):
+    """Depth first traversal on a specific call stack to find matched nodes.
+    """
+    node = cg.rank_to_nodes[rank].get(node_id)
+    if re.match(forward_func_name.split('@')[0], df.at[node_id, 's_name']):
+        matched_nodes.append(node_id)
+        return
+    for child_nid in node.children:
+        _dfs_traverse(cg, rank, child_nid, forward_func_name, df, matched_nodes)
+
+
+def _calculate_tflops_or_bw(df, cur_kernel_node_id, shape_from_node_id, forward_func_name, shape_position):
+    formula_func = shape_position[forward_func_name.split('@')[0]]["formula"]
+    if shape_position[forward_func_name.split('@')[0]]["type"] == 'TFLOPS':
+        df.at[cur_kernel_node_id, 'shape'], df.at[cur_kernel_node_id, 'tflop'] = formula_func(df.at[shape_from_node_id, 'input_dims'], df.at[shape_from_node_id, 's_name'])
+        if df.at[cur_kernel_node_id, 'tflop'] >= 0 and df.at[cur_kernel_node_id, 'kernel_span'] > 0:
+            df.at[cur_kernel_node_id, 'TFLOPS'] = df.at[cur_kernel_node_id, 'tflop']/(df.at[cur_kernel_node_id, 'kernel_span']/1000.0/1000.0) # convert us to s
+        else:
+            logger.warning(f"TFLOPS calculation got invalid tflop {df.at[cur_kernel_node_id, 'tflop']} or kernel_span {df.at[cur_kernel_node_id, 'kernel_span']} for func {forward_func_name} at index {cur_kernel_node_id}")
+    elif shape_position[forward_func_name.split('@')[0]]["type"] == 'BW':
+        df.at[cur_kernel_node_id, 'shape'], df.at[cur_kernel_node_id, 'comm_volume'] = formula_func(df.at[shape_from_node_id, 'input_dims'], df.at[shape_from_node_id, 'input_type'], df.at[shape_from_node_id, 's_name'])
+        if df.at[cur_kernel_node_id, 'comm_volume'] >= 0 and df.at[cur_kernel_node_id, 'kernel_span'] > 0:
+            df.at[cur_kernel_node_id, 'BW'] = df.at[cur_kernel_node_id, 'comm_volume']/(df.at[cur_kernel_node_id, 'kernel_span']/1000.0/1000.0) # convert us to s
+        else:
+            logger.warning(f"BW calculation got invalid comm_volume {df.at[cur_kernel_node_id, 'comm_volume']} or kernel_span {df.at[cur_kernel_node_id, 'kernel_span']} for func {forward_func_name} at index {cur_kernel_node_id}")
+
+
 def extract_shape_from_parents_to_tflops_or_bw_in_bwd(func_name, df, func_mapping_node_index, need_shape_func_name, rank, cg, shape_position):
     tflop_bw_bwd_mapping_index: Dict[str, pd.Series] = defaultdict(pd.Series)
-    if 'shape' not in df:
-        df['shape'] = df['input_dims']
-        df['comm_volume'] = 0.0
-        df['tflop'] = 0.0
-        df['TFLOPS'] = 0.0
-        df['BW'] = 0.0
 
     for forward_func_name, func_ancestors in func_name:
         if forward_func_name.split('@')[0] in need_shape_func_name:
@@ -156,30 +111,15 @@ def extract_shape_from_parents_to_tflops_or_bw_in_bwd(func_name, df, func_mappin
                 cur_node_fwdbwd_index = df.at[index, 'fwdbwd_index']
                 if cur_node_fwdbwd_index <= 0:
                     continue
-                parents = deque()
-                parents.append(cur_node_fwdbwd_index)
-                count = 0
-                while len(parents) > 0 and count < 2:
-                    cur_node = parents.popleft()
-                    if re.match(forward_func_name.split('@')[0], df.at[cur_node, 's_name']):
-                        bwd_index_array[count].append(cur_node)
-                        #df.at[cur_node, 'shape'] = df.at[index, 'input_dims']
-                        formula_func = shape_position[forward_func_name.split('@')[0]]["formula"]
-                        if shape_position[forward_func_name.split('@')[0]]["type"] == 'TFLOPS':
-                            df.at[cur_node, 'shape'], df.at[cur_node, 'tflop'] = formula_func(df.at[index, 'input_dims'], df.at[index, 's_name'])
-                            if df.at[cur_node, 'tflop'] >= 0 and df.at[cur_node, 'kernel_span'] > 0:
-                                df.at[cur_node, 'TFLOPS'] = df.at[cur_node, 'tflop']/(df.at[cur_node, 'kernel_span']/1000.0/1000.0) # convert us to s
-                            count += 1
-                        elif shape_position[forward_func_name.split('@')[0]]["type"] == 'BW':
-                            df.at[cur_node, 'shape'], df.at[cur_node, 'comm_volume'] = formula_func(df.at[index, 'input_dims'], df.at[index, 'input_type'], df.at[index, 's_name'])
-                            if df.at[cur_node, 'comm_volume'] >= 0 and df.at[cur_node, 'kernel_span'] > 0:
-                                df.at[cur_node, 'BW'] = df.at[cur_node, 'comm_volume']/(df.at[cur_node, 'kernel_span']/1000.0/1000.0) # convert us to s
-                            count += 1
-                    cur_callStackNode = cg.rank_to_nodes[rank].get(cur_node)
-                    cur_node_children = cur_callStackNode.children
-                    if len(cur_node_children) > 0:
-                        for child in cur_node_children:
-                            parents.append(int(child))
+                # DFS traverse to find backward kernels for keeping the order
+                matched_nodes = []
+                _dfs_traverse(cg, rank, cur_node_fwdbwd_index, forward_func_name, df, matched_nodes)
+                # print(f'matched nodes: {matched_nodes} for forward func name: {forward_func_name}')
+
+                for idx_for_node, cur_node in enumerate(matched_nodes):
+                    bwd_index_array[idx_for_node].append(cur_node)
+                    _calculate_tflops_or_bw(df, cur_node, index, forward_func_name, shape_position)
+
             for bwd_pos, bwd_index_list in bwd_index_array.items():
                 tflop_bw_bwd_mapping_index[f'{forward_func_name}-bwd-{bwd_pos}'] = pd.Series(bwd_index_list)
     return tflop_bw_bwd_mapping_index
@@ -194,42 +134,42 @@ def cal_dur_percent(row, fwd_total_dur_mean, bwd_total_dur_mean):
 
 SHAPE_POSITION_FWD_BWD = {
     # CheckpointWithoutOutputFunction is RMSNorm_2's parents
-    "nn.Module: RMSNorm_\d+": {
+    r"nn.Module: RMSNorm_\d+": {
         "type": "BW",
         "ShapeFrom": r"CheckpointWithoutOutputFunction",
         "formula": calculate_CheckpointWithoutOutputFunction,
     },
-    "transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm": {
+    r"transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm": {
         "type": "TFLOPS",
         "ShapeFrom": r'_GroupedLinear', #  r"nn.Module: TE(Row|Column)ParallelGroupedLinear_0"
         "formula": calculate_groupedlinear_flops,
     },
-    "transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_gemm": {
+    r"transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_gemm": {
         "type": "TFLOPS",
         "ShapeFrom": r"(_Linear|_LayerNormLinear|RouterGatingLinearFunction)", # _Linear
         "formula": calculate_linear_flops,
     },
-    "aten::_scaled_dot_product_attention_flash_musa": {
+    r"aten::_scaled_dot_product_attention_flash_musa": {
         "type": "TFLOPS",
         "ShapeFrom": r"aten::_scaled_dot_product_attention_flash_musa",
         "formula": calculate_scaled_dot_product_attention_flash_musa_flops,
     },
-    "LinearWithGradAccumulationAndAsyncCommunication": {
+    r"LinearWithGradAccumulationAndAsyncCommunication": {
         "type": "TFLOPS",
         "ShapeFrom": r"LinearWithGradAccumulationAndAsyncCommunication", # _Linear
         "formula": calculate_linear_flops,
     },
-    "INVALID": {
+    r"INVALID": {
         "type": "TFLOPS",
         "ShapeFrom": r"LinearWithGradAccumulationAndAsyncCommunication", # _Linear
         "formula": calculate_linear_flops,
     },
-    "transformer_engine/pytorch/tensor/quantized_tensor.py\(\d+\): quantize": {
+    r"transformer_engine/pytorch/tensor/quantized_tensor.py\(\d+\): quantize": {
         "type": "BW",
         "ShapeFrom": r"(_Linear|_LayerNormLinear|RouterGatingLinearFunction)", # _Linear
         "formula": calculate_linear_bw,
     },
-    "<built-in method fused_multi_quantize of PyCapsule object at 0x7f2d6134f7e0>":{
+    r"<built-in method fused_multi_quantize of PyCapsule object at 0x[0-9a-fA-F]+>":{
         "type": "BW",
         "ShapeFrom": r'_GroupedLinear', 
         "formula": calculate_groupedlinear_bw,
@@ -276,11 +216,11 @@ nn.Module: MoELayer_0
     nn.Module: TEGroupedMLP_0
         nn.Module: TEColumnParallelGroupedLinear_0
             _GroupedLinear @dup@
-                <built-in method fused_multi_quantize of PyCapsule object at 0x7f2d6134f7e0> @dup@ @shape@
+                <built-in method fused_multi_quantize of PyCapsule object at 0x[0-9a-fA-F]+> @dup@ @shape@
                 transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@ @shape@
         nn.Module: TERowParallelGroupedLinear_0
             _GroupedLinear @dup@
-                <built-in method fused_multi_quantize of PyCapsule object at 0x7f2d6134f7e0> @dup@ @shape@
+                <built-in method fused_multi_quantize of PyCapsule object at 0x[0-9a-fA-F]+> @dup@ @shape@
                 transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@ @shape@
 megatron/core/models/gpt/gpt_model.py\(\d+\): _postprocess
     nn.Module: ColumnParallelLinear_0 @dup@
@@ -297,7 +237,7 @@ megatron/core/models/gpt/gpt_model.py\(\d+\): _postprocess
 if __name__ == "__main__":
     import time
     base_dir = "../"
-    trace_dir = str(Path(base_dir).joinpath("fp8-0120"))
+    trace_dir = str(Path(base_dir).joinpath("fp8-0125"))
     cfg = ParserConfig.get_default_cfg()
     # config for extracting shape info
     cfg.add_args(ParserConfig.ARGS_INPUT_SHAPE)
@@ -327,7 +267,7 @@ if __name__ == "__main__":
         func_mapping_node_index: Dict[str, List[np.float64]] = defaultdict(list)
 
         for forward_func_name, func_ancestors in func_name:
-            print(f"Processing function: {forward_func_name}")
+            # print(f"Processing function: {forward_func_name}")
             if forward_func_name.split('@')[0] not in dup_func_name:
                 fwd_df = get_forward_duration_uniq(df, forward_func_name.split('@')[0])
             else:
@@ -335,11 +275,13 @@ if __name__ == "__main__":
             if len(fwd_df) == 0:
                 print(f"forward_func_name no data: {forward_func_name}")
                 continue
-            fwd_dur = calculate_statistics(fwd_df, forward_func_name)
             func_mapping_node_index[forward_func_name] = fwd_df.index
-            bwd_df = get_backward_duration(df, cg, rank, fwd_df.index)
-            bwd_dur = calculate_statistics(bwd_df, forward_func_name+'-bwd')
-            stat_info_funcs_grouped = pd.concat([stat_info_funcs_grouped, fwd_dur, bwd_dur], axis=0)
+        if 'shape' not in df:
+            df['shape'] = df['input_dims']
+            df['comm_volume'] = 0.0
+            df['tflop'] = 0.0
+            df['TFLOPS'] = 0.0
+            df['BW'] = 0.0
 
         tflop_bw_mapping_index = extract_shape_from_parents_to_tflops_or_bw_in_fwd(func_name, df, func_mapping_node_index, need_shape_func_name, rank, cg, SHAPE_POSITION_FWD_BWD)
         tflop_bw_mapping_index_bwd = extract_shape_from_parents_to_tflops_or_bw_in_bwd(func_name, df, func_mapping_node_index, need_shape_func_name, rank, cg, SHAPE_POSITION_FWD_BWD)
@@ -351,12 +293,8 @@ if __name__ == "__main__":
         #    pickle.dump(df, f)
         #df.to_csv(f"./full_df_{rank}_tflops.csv", index=False)
         (root_func_name, _) = func_name[0]
-        fwd_total_dur_mean = stat_info_funcs_grouped[stat_info_funcs_grouped.index == root_func_name]['mean'].values[0]
-        bwd_total_dur_mean = stat_info_funcs_grouped[stat_info_funcs_grouped.index == root_func_name+'-bwd']['mean'].values[0]
-        stat_info_funcs_grouped['mean_percent'] = 0.0
-        stat_info_funcs_grouped['mean_percent'] = stat_info_funcs_grouped.apply(lambda row: cal_dur_percent(row, fwd_total_dur_mean, bwd_total_dur_mean), axis=1)
 
-        with open(f"./fp8-0120-{rank}.txt", "w") as f:
+        with open(f"./fp8-0125-{rank}-repo2.txt", "w") as f:
             for forward_func_name, func_ancestors in func_name:
                 if forward_func_name in tflop_bw_mapping_index:
                     index_series = tflop_bw_mapping_index[forward_func_name]
@@ -366,18 +304,20 @@ if __name__ == "__main__":
                     df_subset_bwd_0 = df[df.index.isin(bwd_first_index)]
                     df_subset_bwd_1 = df[df.index.isin(bwd_second_index)]
                     f.write(f'{"    " * len(func_ancestors)}{forward_func_name}   ')
-                    f.write(f"  shape: {df_subset['shape'].iloc[0] if not df_subset['shape'].empty else 'N/A'}")
+                    f.write(f"  shape: {df_subset['shape'].iloc[0][:min(len(df_subset['shape'].iloc[0]), 3)] if not df_subset['shape'].empty else 'N/A'}")
                     if SHAPE_POSITION_FWD_BWD[forward_func_name.split('@')[0]]["type"] == "TFLOPS":
                         tflops_mean = df_subset['TFLOPS'].mean()
                         #print(f": {forward_func_name}, tflops_mean: {tflops_mean}")
                         f.write(f"  tflops_mean: {tflops_mean:.2f} Tflops, mean_time: {df_subset['kernel_span'].mean():.2f}, q_25: {df_subset['TFLOPS'].quantile(.25):.2f}, q_50: {df_subset['TFLOPS'].quantile(.5):.2f}, q_75: {df_subset['TFLOPS'].quantile(.75):.2f}, count: {len(df_subset)}\n")
-                        f.write(f"    bwd-0 shape: {df_subset_bwd_0['shape'].iloc[0] if not df_subset_bwd_0['shape'].empty else 'N/A'}, tflops_mean: {df_subset_bwd_0['TFLOPS'].mean():.2f} Tflops, mean_time: {df_subset_bwd_0['kernel_span'].mean():.2f}, q_25: {df_subset_bwd_0['TFLOPS'].quantile(.25):.2f}, q_50: {df_subset_bwd_0['TFLOPS'].quantile(.5):.2f}, q_75: {df_subset_bwd_0['TFLOPS'].quantile(.75):.2f}, count: {len(df_subset_bwd_0)}\n")
-                        f.write(f"    bwd-1 shape: {df_subset_bwd_1['shape'].iloc[0] if not df_subset_bwd_1['shape'].empty else 'N/A'}, tflops_mean: {df_subset_bwd_1['TFLOPS'].mean():.2f} Tflops, mean_time: {df_subset_bwd_1['kernel_span'].mean():.2f}, q_25: {df_subset_bwd_1['TFLOPS'].quantile(.25):.2f}, q_50: {df_subset_bwd_1['TFLOPS'].quantile(.5):.2f}, q_75: {df_subset_bwd_1['TFLOPS'].quantile(.75):.2f}, count: {len(df_subset_bwd_1)}\n")
+                        f.write(f"    bwd-0 shape: {df_subset_bwd_0['shape'].iloc[0][:min(len(df_subset['shape'].iloc[0]), 3)] if not df_subset_bwd_0['shape'].empty else 'N/A'}, tflops_mean: {df_subset_bwd_0['TFLOPS'].mean():.2f} Tflops, mean_time: {df_subset_bwd_0['kernel_span'].mean():.2f}, q_25: {df_subset_bwd_0['TFLOPS'].quantile(.25):.2f}, q_50: {df_subset_bwd_0['TFLOPS'].quantile(.5):.2f}, q_75: {df_subset_bwd_0['TFLOPS'].quantile(.75):.2f}, count: {len(df_subset_bwd_0)}\n")
+                        if len(df_subset_bwd_1) > 0:
+                            f.write(f"    bwd-1 shape: {df_subset_bwd_1['shape'].iloc[0][:min(len(df_subset['shape'].iloc[0]), 3)] if not df_subset_bwd_1['shape'].empty else 'N/A'}, tflops_mean: {df_subset_bwd_1['TFLOPS'].mean():.2f} Tflops, mean_time: {df_subset_bwd_1['kernel_span'].mean():.2f}, q_25: {df_subset_bwd_1['TFLOPS'].quantile(.25):.2f}, q_50: {df_subset_bwd_1['TFLOPS'].quantile(.5):.2f}, q_75: {df_subset_bwd_1['TFLOPS'].quantile(.75):.2f}, count: {len(df_subset_bwd_1)}\n")
                     elif  SHAPE_POSITION_FWD_BWD[forward_func_name.split('@')[0]]["type"] == "BW":
                         bw_mean = df_subset['BW'].mean()
                         f.write(f"  bw_mean: {bw_mean:.2f} GB/s, mean_time: {df_subset['kernel_span'].mean():.2f}, q_25: {df_subset['BW'].quantile(.25):.2f}, q_50: {df_subset['BW'].quantile(.5):.2f}, q_75: {df_subset['BW'].quantile(.75):.2f}, count: {len(df_subset)}\n")
-                        f.write(f"    bwd-0 shape: {df_subset_bwd_0['shape'].iloc[0] if not df_subset_bwd_0['shape'].empty else 'N/A'}, tflops_mean: {df_subset_bwd_0['TFLOPS'].mean():.2f} Tflops, mean_time: {df_subset_bwd_0['kernel_span'].mean():.2f}, q_25: {df_subset_bwd_0['TFLOPS'].quantile(.25):.2f}, q_50: {df_subset_bwd_0['TFLOPS'].quantile(.5):.2f}, q_75: {df_subset_bwd_0['TFLOPS'].quantile(.75):.2f}, count: {len(df_subset_bwd_0)}\n")
-                        f.write(f"    bwd-1 shape: {df_subset_bwd_1['shape'].iloc[0] if not df_subset_bwd_1['shape'].empty else 'N/A'}, tflops_mean: {df_subset_bwd_1['TFLOPS'].mean():.2f} Tflops, mean_time: {df_subset_bwd_1['kernel_span'].mean():.2f}, q_25: {df_subset_bwd_1['TFLOPS'].quantile(.25):.2f}, q_50: {df_subset_bwd_1['TFLOPS'].quantile(.5):.2f}, q_75: {df_subset_bwd_1['TFLOPS'].quantile(.75):.2f}, count: {len(df_subset_bwd_1)}\n")
+                        f.write(f"    bwd-0 shape: {df_subset_bwd_0['shape'].iloc[0][:min(len(df_subset['shape'].iloc[0]), 3)] if not df_subset_bwd_0['shape'].empty else 'N/A'}, tflops_mean: {df_subset_bwd_0['TFLOPS'].mean():.2f} Tflops, mean_time: {df_subset_bwd_0['kernel_span'].mean():.2f}, q_25: {df_subset_bwd_0['TFLOPS'].quantile(.25):.2f}, q_50: {df_subset_bwd_0['TFLOPS'].quantile(.5):.2f}, q_75: {df_subset_bwd_0['TFLOPS'].quantile(.75):.2f}, count: {len(df_subset_bwd_0)}\n")
+                        if len(df_subset_bwd_1) > 0:
+                            f.write(f"    bwd-1 shape: {df_subset_bwd_1['shape'].iloc[0][:min(len(df_subset['shape'].iloc[0]), 3)] if not df_subset_bwd_1['shape'].empty else 'N/A'}, tflops_mean: {df_subset_bwd_1['TFLOPS'].mean():.2f} Tflops, mean_time: {df_subset_bwd_1['kernel_span'].mean():.2f}, q_25: {df_subset_bwd_1['TFLOPS'].quantile(.25):.2f}, q_50: {df_subset_bwd_1['TFLOPS'].quantile(.5):.2f}, q_75: {df_subset_bwd_1['TFLOPS'].quantile(.75):.2f}, count: {len(df_subset_bwd_1)}\n")
                     #file_name = forward_func_name.replace('\\', '').replace('+', '').replace(':', '').replace(' ', '').replace('/', '_')
                     #df_subset.to_csv(f"./fp8-kernel_{rank}_{file_name}_tflops_bw.csv", columns=['index', 's_name', 'kernel_span', 'shape', 'tflop', 'comm_volume', 'TFLOPS', 'BW'], index=False)
                     #df_subset_bwd_0.to_csv(f"./bf16-kernel_{rank}_{file_name}_bwd0_tflops_bw.csv", columns=['index', 's_name', 'kernel_span', 'shape', 'tflop', 'comm_volume', 'TFLOPS', 'BW'], index=False)
@@ -385,8 +325,3 @@ if __name__ == "__main__":
                 else:
                     print(f'{"    " * len(func_ancestors)}{forward_func_name}')
                     f.write(f'{"    " * len(func_ancestors)}{forward_func_name}\n')
-
-                #if forward_func_name in stat_info_funcs_grouped.index:
-                    #backward_func_name = forward_func_name + '-bwd'
-                    #f.write(f'{"    " * (len(func_ancestors)+1)} fwd: mean_percent: {stat_info_funcs_grouped.loc[forward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[forward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[forward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[forward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[forward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[forward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[forward_func_name,"min"]:.2f}, count: {stat_info_funcs_grouped.loc[forward_func_name,"count"]:.2f}\n')
-                    #f.write(f'{"    " * (len(func_ancestors)+1)} bwd: mean_percent: {stat_info_funcs_grouped.loc[backward_func_name,"mean_percent"]:.2f}, mean: {stat_info_funcs_grouped.loc[backward_func_name,"mean"]:.2f}, q_25: {stat_info_funcs_grouped.loc[backward_func_name,"q_25"]:.2f}, q_50: {stat_info_funcs_grouped.loc[backward_func_name,"q_50"]:.2f}, q_75: {stat_info_funcs_grouped.loc[backward_func_name,"q_75"]:.2f}, max: {stat_info_funcs_grouped.loc[backward_func_name,"max"]:.2f}, min: {stat_info_funcs_grouped.loc[backward_func_name,"min"]:.2f}, count:  {stat_info_funcs_grouped.loc[backward_func_name,"count"]:.2f}\n')

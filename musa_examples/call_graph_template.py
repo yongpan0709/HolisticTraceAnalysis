@@ -2,7 +2,7 @@ from collections import defaultdict
 from typing import Dict, List, Set
 import copy
 import pandas as pd
-from musa_basic_kernel_info import calculate_CheckpointWithoutOutputFunction, calculate_groupedlinear_flops, calculate_linear_flops, calculate_scaled_dot_product_attention_flash_musa_flops
+from musa_basic_kernel_info import calculate_CheckpointWithoutOutputFunction, calculate_groupedlinear_tflops_or_bw, calculate_linear_tflops_or_bw, calculate_scaled_dot_product_attention_flash_musa_flops
 
 DUP_LABEL = "@dup@"
 SHAPE_LABEL = "@shape@"
@@ -18,12 +18,12 @@ SHAPE_POSITION = {
     "transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm": {
         "type": "TFLOPS",
         "ShapeFrom": r'_GroupedLinear', #  r"nn.Module: TE(Row|Column)ParallelGroupedLinear_0"
-        "formula": calculate_groupedlinear_flops,
+        "formula": calculate_groupedlinear_tflops_or_bw,
     },
     "transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_gemm": {
         "type": "TFLOPS",
         "ShapeFrom": r"(_Linear|_LayerNormLinear|RouterGatingLinearFunction)", # _Linear
-        "formula": calculate_linear_flops,
+        "formula": calculate_linear_tflops_or_bw,
     },
     "aten::_scaled_dot_product_attention_flash_musa": {
         "type": "TFLOPS",
@@ -33,12 +33,12 @@ SHAPE_POSITION = {
     "LinearWithGradAccumulationAndAsyncCommunication": {
         "type": "TFLOPS",
         "ShapeFrom": r"LinearWithGradAccumulationAndAsyncCommunication", # _Linear
-        "formula": calculate_linear_flops,
+        "formula": calculate_linear_tflops_or_bw,
     },
     "aten::mm": {
         "type": "TFLOPS",
         "ShapeFrom": r"LinearWithGradAccumulationAndAsyncCommunicationBackward", # _Linear
-        "formula": calculate_linear_flops,
+        "formula": calculate_linear_tflops_or_bw,
     }
 }
 SHAPE_TO_FLOPS_FUNC =  {
@@ -122,31 +122,9 @@ pretrain_deepseekv2.py\(\d+\): forward_step
 """
 
 output_template_to_file_debug = r"""
-nn.Module: MLASelfAttention_0
-    nn.Module: TELinear_0
-        transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_gemm @dup@ @shape@
-    nn.Module: TELinear_1
-        transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_gemm @dup@ @shape@
-    nn.Module: TELayerNormColumnParallelLinear_0
-        _LayerNormLinear @dup@
-            transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_gemm @dup@ @shape@
-    nn.Module: TELayerNormColumnParallelLinear_1
-        _LayerNormLinear @dup@
-            transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_gemm @dup@ @shape@
-    nn.Module: TEDotProductAttention_0
-        nn.Module: FlashAttention_0
-            aten::_scaled_dot_product_attention_flash_musa @shape@
-    nn.Module: TERowParallelLinear_0
-        transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_gemm @dup@ @shape@
-nn.Module: MoELayer_0
-    nn.Module: TopKRouter_0
-        RouterGatingLinearFunction
-            transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_gemm @dup@ @shape@
-    nn.Module: TEGroupedMLP_0
-        nn.Module: TEColumnParallelGroupedLinear_0
-            transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@ @shape@
-        nn.Module: TERowParallelGroupedLinear_0
-            transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@ @shape@
+nn.Module: TEDotProductAttention_0
+    nn.Module: FlashAttention_0
+        aten::_scaled_dot_product_attention_flash_musa @shape@
 """
 
 output_template_to_file_kimi = r"""

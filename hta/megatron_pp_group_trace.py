@@ -43,9 +43,11 @@ def keep_comm_span_only(trace_df):
         'send_backward', 
         'send_forward_recv_backward', 
         'send_backward_recv_forward', 
+        'send_forward_recv_forward',
+        'send_backward_recv_backward',
         # useing batch_isend_irecv
-        # 'mccl:send', 
-        # 'mccl:recv', 
+        'mccl:send', 
+        'mccl:recv', 
         'finalize_model_grads',
         'step',
         # 'step_with_ready_grads',

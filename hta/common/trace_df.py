@@ -209,6 +209,11 @@ def save_trace_df_to_file(df: pd.DataFrame, output_file: str, trace_df_p2p_comm_
     new_df['name'] = df['s_name']
     new_df['cat'] = df['s_cat']
     new_df['ph'] = 'X'
+    # Todo: in interleaved PP, send_fwd_recv_fwd and send_bwd_recv_bwd execute asyn and in parallel with fwd_step or bwd_step
+    # so for displaying in perfetto, it muse set them with different tids.
+    new_df.loc[new_df['name'].str.match(pat=r"^(send_forward_recv_forward|send_backward_recv_backward)$"), 'tid'] = 1
+    new_df.loc[new_df['name'].str.match(pat=r"^mccl:recv$"), 'tid'] = 2
+    new_df.loc[new_df['name'].str.match(pat=r"^mccl:send$"), 'tid'] = 3
     #new_df['args'] = df.apply(lambda row: {col: row[col] for col in row.index if col not in columns_to_keep + columns_to_drop}, axis=1)
 
     trace_data = meta_data.copy() if meta_data is not None else {}

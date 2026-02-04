@@ -227,7 +227,7 @@ class DistributedMegatronTraceAnalysis:
             logger.info(f'Analyzer saved to {cache_path}')
         return analyzer
     
-    def process_single_pp_group(self, pp_group_id, trace_dir):
+    def process_single_pp_group(self, pp_group_id, trace_dir, pp_schedule='1f1b'):
         output_dir = os.path.join(trace_dir, 'output')
         prepare_directory(output_dir, force_clear=True)
         
@@ -237,11 +237,12 @@ class DistributedMegatronTraceAnalysis:
         
         return analyzer_single_pp_group
     
-    def analyze(self):
+    def analyze(self, pp_schedule='1f1b'):
         self.analysis_list = []
         for pp_group_id, folder in enumerate(self.assigned_folders):
             analyzer_single_pp_group = self.process_single_pp_group(pp_group_id, folder)
             self.analysis_list.append(analyzer_single_pp_group)
+            break
         #self.gather_infos_from_all_ranks()
         # self.analyze_anomalies()
         #self.post_process()

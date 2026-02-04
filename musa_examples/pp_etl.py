@@ -1,4 +1,6 @@
 import json
+import argparse
+
 from copy import deepcopy  # 导入 deepcopy
 from pathlib import Path 
 from hta.common.trace_file import get_trace_files
@@ -57,20 +59,24 @@ def filter_out_funcs(file_path, redirect_new_trace_path):
     with open(redirect_new_trace_path, 'w') as file:
         json.dump(dup_data, file, indent='\t')
 
+def create_directory_if_not_exists(path):
+    """创建文件夹，如果已存在则忽略（推荐方法）"""
+    os.makedirs(path, exist_ok=True)
+    return path
+
 if __name__ == "__main__":
     # 示例用法
-    base_dir = "../"
-    trace_dir = str(Path(base_dir).joinpath("20260106-iter8"))
-    redirect_path = '20260106-3h-iter8-filtered'
+    parser = argparse.ArgumentParser(
+        description="Generate version_info.mk file which will include ddk, musa_toolkit, mudnn, mccl download url.",
+        usage=f"python trace_etl.py --trace_dir <trace directory>")
+    parser.add_argument('--trace_dir', required=True, help='trace directory')
+    args = parser.parse_args()
+    trace_dir = args.trace_dir
+    trace_dir = trace_dir.rstrip('/')
+    redirect_path = create_directory_if_not_exists(trace_dir+'-etl')
+    print(f'Origin Trace_dir: {trace_dir}, After filtering Dir: {redirect_path}')
     pp_groups = [
-        [0, 8, 16],
-        [1, 9, 17],
-        [2, 10, 18],
-        [3, 11, 19],
-        [4, 12, 20],
-        [5, 13, 21],
-        [6, 14, 22],
-        [7, 15, 23],
+        [0, 16, 32, 48], [1, 17, 33, 49]
     ]
     #ranks = [0, 8, 16]
     trace_files = get_trace_files(trace_dir)
@@ -82,7 +88,7 @@ if __name__ == "__main__":
             #print(f'rank {rank} in ranks:{ranks}')
             trace_file = trace_files[rank]
             filename = os.path.basename(trace_file)
-            redirect_new_trace_path = os.path.join(base_dir, redirect_path, filename)
+            redirect_new_trace_path = os.path.join(redirect_path, filename)
             tasks.append((trace_file, redirect_new_trace_path))
         num_procs = min(mp.cpu_count(), len(ranks))
         print(f'tasks: {tasks}')

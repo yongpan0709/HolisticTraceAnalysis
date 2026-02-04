@@ -41,7 +41,7 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         prepare_directory(self.output_dir, force_clear=False)
         # self.t.save_traces(f'{self.output_dir}/init.json')
     
-    def analyze_pipeline_parallel_per_group(self, pp_group_id):
+    def analyze_pipeline_parallel_per_group(self, pp_group_id, pp_schedule='1f1b'):
         # Since setting PROFILER_WITH_STACK=0 when profiling,
         # only annotated funcs, aten kernels and GPU kernels kept in trace.json
         #self.t.display_traces_info(self.t.traces)

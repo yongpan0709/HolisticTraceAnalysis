@@ -97,7 +97,7 @@ class DistributedMegatronTraceAnalysis:
         self.context_parallel_size = cp
 
         self.comm = MPI.COMM_WORLD
-        self.rank = self.comm.Get_rank()
+        self.rank = self.comm.Get_rank() # id of current process
         self.world_size = self.comm.Get_size()
         self.processor_name = MPI.Get_processor_name()
         self.expert_decoder_rank_generator = RankGenerator(
@@ -112,6 +112,7 @@ class DistributedMegatronTraceAnalysis:
         self.all_data_parallel_group_ranks = self.expert_decoder_rank_generator.get_ranks('dp')
         self.all_tensor_parallel_group_ranks = self.expert_decoder_rank_generator.get_ranks('tp')
         self.all_pipeline_parallel_group_ranks = self.expert_decoder_rank_generator.get_ranks('pp')
+        self.assigned_tasks = []
         self.setup_dirs()
         self.setup_logging()
         self.init_pp_group_sub_dirs()
@@ -168,11 +169,12 @@ class DistributedMegatronTraceAnalysis:
             prepare_directory(self.log_dir, force_clear=True)
             prepare_directory(self.output_dir, force_clear=True)
             prepare_directory(self.stragglers_dir, force_clear=True)
-        #self.comm.Barrier()
-        #time.sleep(3)
+        self.comm.Barrier()
+        time.sleep(3)
     
     def setup_logging(self):
-        log_filename = os.path.join(self.log_dir, f'log_rank_{self.rank}.log')
+        # Here, self.rank is from mpirun, which is corresponding to one analysis process.
+        log_filename = os.path.join(self.log_dir, f'log_mpirun_parallel_{self.rank}.log')
         logging.basicConfig(
             filename=log_filename,
             filemode='w',
@@ -192,10 +194,8 @@ class DistributedMegatronTraceAnalysis:
                 trace_dir_for_pp_group, 
                 self.all_pipeline_parallel_group_ranks, 
             )
-
-        #Todo: mpi run on multiple nodes may have issue here
-        #self.comm.Barrier()
-        #time.sleep(6)
+        self.comm.Barrier()
+        time.sleep(6)
         logger.info('Initialization of pipeline parallel group subdirectories completed.')
     
     def assign_analysis_tasks(self):
@@ -211,8 +211,11 @@ class DistributedMegatronTraceAnalysis:
             start_index = remainder * (num_folders_per_process + 1) + (self.rank - remainder) * num_folders_per_process
             end_index = start_index + num_folders_per_process
         
-        self.assigned_folders = self.all_pp_group_sub_dirs[start_index:end_index]
-        logger.info(f'Assigned folders: {self.assigned_folders}')
+        #self.assigned_folders = self.all_pp_group_sub_dirs[start_index:end_index]
+        for i in range(start_index, end_index):
+            #(pp_groud_id, pp_group_sub_dir)
+            self.assigned_tasks.append((i, self.all_pp_group_sub_dirs[i]))
+        logger.info(f'Assigned tasks: {self.assigned_tasks}')
 
     def load_trace_analyzer(self, trace_dir):
         cache_path = os.path.join(trace_dir, 'analyzer_cache.pkl')
@@ -239,10 +242,11 @@ class DistributedMegatronTraceAnalysis:
     
     def analyze(self, pp_schedule='1f1b'):
         self.analysis_list = []
-        for pp_group_id, folder in enumerate(self.assigned_folders):
+        print(f'assigned tasks:{self.assigned_tasks}')
+        for pp_group_id, folder in self.assigned_tasks:
+            logger.debug(f'Processing pp group {pp_group_id}')
             analyzer_single_pp_group = self.process_single_pp_group(pp_group_id, folder)
             self.analysis_list.append(analyzer_single_pp_group)
-            break
         #self.gather_infos_from_all_ranks()
         # self.analyze_anomalies()
         #self.post_process()

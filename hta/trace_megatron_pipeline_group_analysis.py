@@ -84,19 +84,24 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
             time_per_iteration = self._calculate_time_per_iteration(trace_df)
             all_forward_steps_df = NameFilter(create_regex_for_prefix_match(['forward_step']))(sorted_trace_df)
             all_backward_steps_df = NameFilter(create_regex_for_prefix_match(['backward_step']))(sorted_trace_df)
+            #all_forward_steps_df.to_csv(f'all_forward_steps_df-{rank}-stageid-{stage_id}.csv')
+            #all_backward_steps_df.to_csv(f'all_backward_steps_df-{rank}-stageid-{stage_id}.csv')
             forward_step_avg_time, backward_step_avg_time, compute_time_total, fwd_std, bwd_std = self._calculate_step_times(all_forward_steps_df, all_backward_steps_df)
 
             all_comm_time_df = NameFilter(create_regex_for_prefix_match(['send_forward',  'recv_forward',  'send_forward_recv_backward',  'send_backward_recv_forward',  'send_backward',  'recv_backward']))(sorted_trace_df)
             #all_comm_time_df.to_csv(f'all_comm_time_df-{rank}-stageid-{stage_id}.csv')
             comm_time_total = self._calculate_comm_time_total(all_comm_time_df)
 
-            bubble_time_head = self._calculate_bubble_time_head(all_comm_time_df)
-            bubble_time_middle = self._calculate_bubble_time_middle(all_comm_time_df)
-            bubble_time_tail = self._calculate_bubble_time_tail(all_comm_time_df)
+            theoretical_bubble_time_warmup = self._calculate_theoretical_bubble_time_warmup(all_comm_time_df, stage_id)
+            bubble_time_warmup = self._calculate_bubble_time_warmup(all_comm_time_df) - theoretical_bubble_time_warmup
+            theoretical_bubble_time_steady = self._calculate_theoretical_bubble_time_steady(all_comm_time_df, stage_id)
+            bubble_time_steady = self._calculate_bubble_time_steady(all_comm_time_df) - theoretical_bubble_time_steady
+            theoretical_bubble_time_cooldown = self._calculate_theoretical_bubble_time_cooldown(all_comm_time_df, stage_id)
+            bubble_time_cooldown = self._calculate_bubble_time_cooldown(all_comm_time_df) - theoretical_bubble_time_cooldown
             finalize_model_grads_step_time = self._calculate_finalize_model_grads_step_time(sorted_trace_df)
             optimizer_time = self._calculate_optimizer_step_time_and_bubble(sorted_trace_df)
             logical_and_across_model_parallel_group_time = self._calculate_logical_and_across_model_parallel_group_time(sorted_trace_df)
-            #bubble_time_total = bubble_time_head + bubble_time_middle + bubble_time_tail # + bubble_time_final
+            #bubble_time_total = bubble_time_warmup + bubble_time_steady + bubble_time_cooldown # + bubble_time_final
             #comm_time_total += bubble_time_final
             comm_time_true, overhead_wait_time_total = self._calculate_true_comm_and_overhead_wait_time(all_comm_time_df)
             
@@ -105,30 +110,40 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
             num_microbatch = len(all_forward_steps_df)  # Assuming the number of send steps represents the number of microbatches
             assert(len(all_backward_steps_df) == num_microbatch)
 
-            args = {
+            info_per_rank = {
                 'rank': rank,
-                'time_per_iteration': time_per_iteration,
+                'time_per_iteration': time_per_iteration/1000,
                 'num_microbatch': num_microbatch,
-                'forward_step_avg_time': forward_step_avg_time,
-                'backward_step_avg_time': backward_step_avg_time,
-                'compute_time_total': compute_time_total,
-                'comm_time_total': comm_time_total,
-                'comm_time_true': comm_time_true,
-                'overhead_wait_time_total': overhead_wait_time_total,
+                'forward_step_avg_time': forward_step_avg_time /1000,
+                'fwd_step_std_time': fwd_std/1000,
+                'backward_step_avg_time': backward_step_avg_time /1000,
+                'bwd_step_std_time': bwd_std/1000,
+                'compute_time_per_microbatch': (forward_step_avg_time + backward_step_avg_time) / 1000,
+                'compute_time_total': compute_time_total/1000,
+                'comm_time_total': comm_time_total/1000,
+                'comm_time_true': comm_time_true/1000,
+                'overhead_wait_time_total': overhead_wait_time_total/1000,
                 #'bubble_time_total': bubble_time_total,
-                'bubble_time_head': bubble_time_head,
-                'bubble_time_middle': bubble_time_middle,
-                'bubble_time_tail': bubble_time_tail,
+                'bubble_time_warmup': bubble_time_warmup/1000,
+                'bubble_time_steady': bubble_time_steady/1000,
+                'bubble_time_cooldown': bubble_time_cooldown/1000,
+                'theoretical_bubble_time_warmup': theoretical_bubble_time_warmup/1000,
+                'theoretical_bubble_time_steady': theoretical_bubble_time_steady/1000,
+                'theoretical_bubble_time_cooldown': theoretical_bubble_time_cooldown/1000,
                 #'bubble_time_final': bubble_time_final,
+                #'bubble_time_detail': [args['bubble_time_warmup'] / 1000, args['bubble_time_steady'] / 1000, args['bubble_time_cooldown'] / 1000],
+                'overhead_wait_time_ratio': overhead_wait_time_total / time_per_iteration,
+                'bubble_time_ratio': overhead_wait_time_total/ (compute_time_total + comm_time_total),
+                'bubble_time_ratio_theoretical': (self.t.pipeline_parallel_size - 1) / (self.t.pipeline_parallel_size - 1 + num_microbatch),
                 'pipeline_parallel_size': self.t.pipeline_parallel_size,
+                'comm_time_true_ratio': comm_time_true / time_per_iteration,
+                'comp_time_ratio': compute_time_total / time_per_iteration,
+                'comm_time_ratio': comm_time_total / time_per_iteration,
                 'finalize_model_grads_step_time': finalize_model_grads_step_time,
                 'logical_and_across_model_parallel_group_time': logical_and_across_model_parallel_group_time,
-                'optimizer_time_total': optimizer_time,
-                'fwd_std': fwd_std,
-                'bwd_std': bwd_std,
+                'optimizer_time_total': optimizer_time/1000,
             }
-
-            info_per_rank = self._generate_info_per_rank(args)
+            #info_per_rank = self._generate_info_per_rank(args)
 
             if output_df is None:
                 output_df = pd.DataFrame([info_per_rank])
@@ -174,21 +189,42 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
     def _calculate_comm_time_total(self, all_comm_time_df):
         return all_comm_time_df['kernel_span'].sum()
 
-    def _calculate_bubble_time_head(self, all_comm_time_df):
+    def _calculate_bubble_time_warmup(self, all_comm_time_df):
         recv_index_in_head = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^recv_forward(?:_\d+)?$')].index
         send_index_in_head = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_forward(?:_\d+)?$')].index
         return all_comm_time_df.loc[recv_index_in_head, 'wait_time'].sum() + all_comm_time_df.loc[send_index_in_head, 'wait_time'].sum()
 
-    def _calculate_bubble_time_middle(self, all_comm_time_df):
+    def _calculate_theoretical_bubble_time_warmup(self, all_comm_time_df, stage_id):
+        if stage_id == 0:
+            return 0.0
+        else:
+            theoretical_bubble_head_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^recv_forward(?:_\d+)?$')].index[0]
+            return all_comm_time_df.loc[theoretical_bubble_head_index, 'wait_time']
+
+    def _calculate_bubble_time_steady(self, all_comm_time_df):
         send_forward_recv_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_forward_recv_backward.*')].index
         send_backward_recv_forward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_backward_recv_forward.*')].index
         return all_comm_time_df.loc[send_forward_recv_backward_index, 'wait_time'].sum() + all_comm_time_df.loc[send_backward_recv_forward_index, 'wait_time'].sum()
 
-    def _calculate_bubble_time_tail(self, all_comm_time_df):
+    def _calculate_theoretical_bubble_time_steady(self, all_comm_time_df, stage_id):
+        if stage_id == self.t.pipeline_parallel_size-1:
+            return 0.0
+        else:
+            send_forward_recv_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_forward_recv_backward.*')].index[0]
+            return all_comm_time_df.loc[send_forward_recv_backward_index, 'wait_time']
+        
+    def _calculate_bubble_time_cooldown(self, all_comm_time_df):
         send_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_backward(?:_\d+)?$')].index
         recv_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^recv_backward(?:_\d+)?$')].index
-        bubble_time_tail = all_comm_time_df.loc[send_backward_index, 'wait_time'].sum() + all_comm_time_df.loc[recv_backward_index, 'wait_time'].sum()
-        return bubble_time_tail
+        bubble_time_cooldown = all_comm_time_df.loc[send_backward_index, 'wait_time'].sum() + all_comm_time_df.loc[recv_backward_index, 'wait_time'].sum()
+        return bubble_time_cooldown
+    
+    def _calculate_theoretical_bubble_time_cooldown(self, all_comm_time_df, stage_id):
+        if stage_id == self.t.pipeline_parallel_size-1:
+            return 0.0
+        else:
+            recv_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^recv_backward(?:_\d+)?$')].index
+            return all_comm_time_df.loc[recv_backward_index, 'wait_time'].sum()
 
     def _calculate_finalize_model_grads_step_time(self, sorted_trace_df):
         pattern = r'^finalize_model_grads$'
@@ -219,30 +255,4 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         overhead_wait_time_total = all_comm_time_df['wait_time'].sum()
         return comm_time_true, overhead_wait_time_total
 
-    def _generate_info_per_rank(self, args):
-        return {
-            'rank': args['rank'],
-            'time_per_iteration': args['time_per_iteration'] / 1000,
-            'microbatch_num': args['num_microbatch'],
-            'forward_step_time': args['forward_step_avg_time'] / 1000,
-            'backward_step_time': args['backward_step_avg_time'] / 1000,
-            'forward_std_time': args['fwd_std'] / 1000,
-            'backward_std_time': args['bwd_std'] / 1000,
-            'time_per_microbatch': (args['forward_step_avg_time'] + args['backward_step_avg_time']) / 1000,
-            'compute_time_total': args['compute_time_total'] / 1000,
-            'comm_time_total': args['comm_time_total'] / 1000,
-            'optimizer_time_total': args['optimizer_time_total'] / 1000,
-            'comm_time_true': args['comm_time_true'] / 1000,
-            'overhead_wait_time_total': args['overhead_wait_time_total'] / 1000,
-            #'bubble_time_total': args['bubble_time_total'] / 1000,
-            'bubble_time_detail': [args['bubble_time_head'] / 1000, args['bubble_time_middle'] / 1000, args['bubble_time_tail'] / 1000],
-            'finalize_model_grads_step_time': args['finalize_model_grads_step_time'] / 1000,
-            'logical_and_across_model_parallel_group_time': args['logical_and_across_model_parallel_group_time'] / 1000,
-            'comp_time_ratio': args['compute_time_total'] / args['time_per_iteration'],
-            'comm_time_ratio': args['comm_time_total'] / args['time_per_iteration'],
-            'comm_time_true_ratio': args['comm_time_true'] / args['time_per_iteration'],
-            'overhead_wait_time_ratio': args['overhead_wait_time_total'] / args['time_per_iteration'],
-            'bubble_time_ratio': args['overhead_wait_time_total']/ (args['compute_time_total'] + args['comm_time_total']),
-            'bubble_time_ratio_theoretical': (args['pipeline_parallel_size'] - 1) / (args['pipeline_parallel_size'] - 1 + args['num_microbatch'])
-        }
     

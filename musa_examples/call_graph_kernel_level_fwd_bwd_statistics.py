@@ -218,14 +218,14 @@ SHAPE_POSITION_FWD_BWD_OF_FLASH_ATTENTION = {
 if __name__ == "__main__":
     import time
     base_dir = "../"
-    trace_dir = str(Path(base_dir).joinpath("fp8-0125"))
+    trace_dir = str(Path(base_dir).joinpath("good_perf"))
     cfg = ParserConfig.get_default_cfg()
     # config for extracting shape info
     cfg.add_args(ParserConfig.ARGS_INPUT_SHAPE)
     ParserConfig.set_default_cfg(cfg)
     trace_files = get_trace_files(trace_dir)
     for rank, trace_file in trace_files.items():
-        if rank != 8:
+        if rank != 32:
             continue
         # HTA starts from here
         t = Trace(trace_files={rank: trace_file}, trace_dir="")
@@ -267,7 +267,7 @@ if __name__ == "__main__":
         tflop_bw_mapping_index = extract_shape_from_parents_to_tflops_or_bw_in_fwd(func_name, df, func_mapping_node_index, need_shape_func_name, rank, cg, SHAPE_POSITION_FWD_BWD)
         tflop_bw_mapping_index_bwd = extract_shape_from_parents_to_tflops_or_bw_in_bwd(func_name, df, func_mapping_node_index, need_shape_func_name, rank, cg, SHAPE_POSITION_FWD_BWD)
         print('tflop_bw_mapping_index_bwd:', tflop_bw_mapping_index_bwd)
-        with open(f"./fp8-0125-{rank}-repo6.txt", "w") as f:
+        with open(f"./20260211-{rank}-repo6.txt", "w") as f:
             for forward_func_name, func_ancestors in func_name:
                 if forward_func_name in tflop_bw_mapping_index:
                     index_series = tflop_bw_mapping_index[forward_func_name]
@@ -279,6 +279,8 @@ if __name__ == "__main__":
                             continue
                         
                         df_subset = df[df.index.isin(df_subset_index_series)]
+                        #file_name = forward_func_name.replace('\\', '').replace('+', '').replace(':', '').replace(' ', '').replace('/', '_')
+                        #df_subset.to_csv(f"./{fwd_bwd_key}_{rank}_{file_name}_tflops_bw.csv", columns=['index', 's_name', 'kernel_span', 'shape', 'TFLOPS', 'GB/s'], index=False)
                         f.write(f"{fwd_bwd_key} shape: {df_subset['shape'].iloc[0]}, ")
                         if forward_func_name.split('@')[0] in SHAPE_POSITION_FWD_BWD:
                             calculate_type = SHAPE_POSITION_FWD_BWD[forward_func_name.split('@')[0]]["type"] # TFLOPS or GB/s
@@ -296,9 +298,6 @@ if __name__ == "__main__":
                     #    if len(df_subset_bwd_1) > 0:
                     #        f.write(f"    bwd-1 shape: {df_subset_bwd_1['shape'].iloc[0] if not df_subset_bwd_1['shape'].empty else 'N/A'}, tflops_mean: {df_subset_bwd_1[calculate_type].mean():.2f} Tflops, mean_time: {df_subset_bwd_1['kernel_span'].mean():.2f}, q_25: {df_subset_bwd_1[calculate_type].quantile(.25):.2f}, q_50: {df_subset_bwd_1[calculate_type].quantile(.5):.2f}, q_75: {df_subset_bwd_1[calculate_type].quantile(.75):.2f}, count: {len(df_subset_bwd_1)}\n")
                     #file_name = forward_func_name.replace('\\', '').replace('+', '').replace(':', '').replace(' ', '').replace('/', '_')
-                    #df_subset.to_csv(f"./fp8-kernel_{rank}_{file_name}_tflops_bw.csv", columns=['index', 's_name', 'kernel_span', 'shape', 'tflop', 'comm_volume', 'TFLOPS', 'BW'], index=False)
-                    #df_subset_bwd_0.to_csv(f"./bf16-kernel_{rank}_{file_name}_bwd0_tflops_bw.csv", columns=['index', 's_name', 'kernel_span', 'shape', 'tflop', 'comm_volume', 'TFLOPS', 'BW'], index=False)
-                    #df_subset_bwd_1.to_csv(f"./bf16-kernel_{rank}_{file_name}_bwd1_tflops_bw.csv", columns=['index', 's_name', 'kernel_span', 'shape', 'tflop', 'comm_volume', 'TFLOPS', 'BW'], index=False)
                 else:
                     print(f'{"    " * len(func_ancestors)}{forward_func_name}')
                     f.write(f'{"    " * len(func_ancestors)}{forward_func_name}\n')

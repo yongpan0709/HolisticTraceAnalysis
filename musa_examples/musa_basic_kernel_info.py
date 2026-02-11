@@ -32,6 +32,14 @@ def _cal_comm_volume(m, n, k, input_type, cal_phrase):
         volume = m * k * 2 * get_num_of_bytes(input_type) # read and write
     return volume
 
+def _cal_shape(M, N, K, cal_phrase):
+    if cal_phrase =='bwd-0':
+        return [[M, N], [N, K]]
+    elif cal_phrase == 'bwd-1':
+        return [[M, N], [M, K]]
+    else:
+        return [[M, K], [N, K]]
+    
 # kernel span(unit: s)
 def calculate_groupedlinear_tflops_or_bw(input_dims, input_type, kernel_span, shape_from_func, calculate_type, cal_phrase):
     if len(input_dims) < 14:
@@ -42,13 +50,15 @@ def calculate_groupedlinear_tflops_or_bw(input_dims, input_type, kernel_span, sh
         else:
             return 0
     dims = drop_empty_arrays(input_dims)
+    #print(f'cal_phrase: {cal_phrase}, shape_from_func: {shape_from_func} \n dims:{dims}')
     M = dims[0][0]
     N, K = dims[1][0], dims[1][1]
+    #print(f'M: {M}, N: {N}, K:{K}')
     if calculate_type.upper() == "TFLOPS":
-        return [[M, K], [N, K]], M * N * K * 2/ 1e12 / kernel_span
+        return _cal_shape(M, N, K, cal_phrase), M * N * K * 2/ 1e12 / kernel_span
     elif calculate_type.upper() == "GB/S":
         volume = _cal_comm_volume(M, N, K, input_type, cal_phrase)
-        return [[M, K], [N, K]], volume / (1024.0 ** 3) / kernel_span # GB
+        return _cal_shape(M, N, K, cal_phrase), volume / (1024.0 ** 3) / kernel_span # GB
     return [[M, K], [N, K]], 0.0
 
 def calculate_linear_tflops_or_bw(input_dims, input_type, kernel_span, shape_from_func, calculate_type, cal_phrase):
@@ -65,10 +75,10 @@ def calculate_linear_tflops_or_bw(input_dims, input_type, kernel_span, shape_fro
         M, K = dims[0][0], dims[0][2]
         N = dims[1][0]
     if calculate_type.upper() == "TFLOPS":
-        return [[M, K], [N, K]], M * N * K * 2 / 1e12 / kernel_span
+        return _cal_shape(M, N, K, cal_phrase), M * N * K * 2 / 1e12 / kernel_span
     elif calculate_type.upper() == "GB/S":
         volume = _cal_comm_volume(M, N, K, input_type, cal_phrase)
-        return [[M, K], [N, K]], volume / (1024 ** 3) / kernel_span # GB
+        return _cal_shape(M, N, K, cal_phrase), volume / (1024 ** 3) / kernel_span # GB
     return [[M, K], [N, K]], 0.0
 
 

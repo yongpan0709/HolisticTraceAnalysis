@@ -10,7 +10,6 @@ import copy
 
 import pandas as pd
 
-from hta.megatron_pp_group_trace import MegatronPipelineParrallelGroupTrace
 from hta.configs.config import logger
 from hta.configs.default_values import DEFAULT_TRACE_DIR
 from hta.configs.parser_config import ParserConfig
@@ -18,6 +17,7 @@ from hta.common.trace_call_graph import CallGraph
 from hta.common.trace_filter import NameFilter, create_regex_for_prefix_match
 from hta.utils.utils import prepare_directory
 from hta.trace_analysis import TraceAnalysis
+from megatron_pp_group_trace import MegatronPipelineParrallelGroupTrace
 
 
 class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
@@ -139,8 +139,8 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
                 'comm_time_true_ratio': comm_time_true / time_per_iteration,
                 'comp_time_ratio': compute_time_total / time_per_iteration,
                 'comm_time_ratio': comm_time_total / time_per_iteration,
-                'finalize_model_grads_step_time': finalize_model_grads_step_time,
-                'logical_and_across_model_parallel_group_time': logical_and_across_model_parallel_group_time,
+                'finalize_model_grads_step_time': finalize_model_grads_step_time/1000,
+                'logical_and_across_model_parallel_group_time': logical_and_across_model_parallel_group_time/1000,
                 'optimizer_time_total': optimizer_time/1000,
             }
             #info_per_rank = self._generate_info_per_rank(args)
@@ -210,8 +210,11 @@ class MegatronPipelineParallelGroupTraceAnalysis(TraceAnalysis):
         if stage_id == self.t.pipeline_parallel_size-1:
             return 0.0
         else:
-            send_forward_recv_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_forward_recv_backward.*')].index[0]
-            return all_comm_time_df.loc[send_forward_recv_backward_index, 'wait_time']
+            send_forward_recv_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_forward_recv_backward.*')].index
+            if len(send_forward_recv_backward_index) > 0:
+                return all_comm_time_df.loc[send_forward_recv_backward_index[0], 'wait_time']
+            else:
+                return 0.0
         
     def _calculate_bubble_time_cooldown(self, all_comm_time_df):
         send_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_backward(?:_\d+)?$')].index

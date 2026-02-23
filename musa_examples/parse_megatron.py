@@ -1,4 +1,4 @@
-from hta.distribute_trace_analysis import DistributedMegatronTraceAnalysis
+from distribute_trace_analysis import DistributedMegatronTraceAnalysis
         
 # MUST: setting PROFILER_WITH_STACK=0
 def main():
@@ -8,11 +8,11 @@ def main():
     # trace_dir = '/home/dist/HolisticTraceAnalysis/llama3-20250728-tp2pp4/iteration_4'
     # DS MoE
     TP_SIZE = 1
-    PP_SIZE = 3
-    DP_SIZE = 1
+    PP_SIZE = 4
+    DP_SIZE = 2
     EP_SIZE = 8
-    trace_dir = '/Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/20260104-3h-iter8-filtered'
-    #trace_dir = '/Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/kimi-pp-32'
+    # trace_dir = '/Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/20260204-vpp2-etl'
+    trace_dir = '/Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/20260206-nooverlap-1f1b-etl'
 
     # Llama3
     # TP_SIZE = 2

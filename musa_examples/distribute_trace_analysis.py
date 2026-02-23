@@ -1,7 +1,7 @@
-from hta.trace_megatron_pipeline_group_analysis import MegatronPipelineParallelGroupTraceAnalysis
 from hta.utils.parallel_state import RankGenerator
 from hta.utils.utils import partition_files_across_directories, prepare_directory
 from hta.configs.config import logger
+from trace_megatron_pipeline_group_analysis import MegatronPipelineParallelGroupTraceAnalysis
 
 from mpi4py import MPI
 import os
@@ -242,11 +242,12 @@ class DistributedMegatronTraceAnalysis:
     
     def analyze(self, pp_schedule='1f1b'):
         self.analysis_list = []
-        print(f'assigned tasks:{self.assigned_tasks}')
+        # print(f'assigned tasks:{self.assigned_tasks}')
         for pp_group_id, folder in self.assigned_tasks:
             logger.debug(f'Processing pp group {pp_group_id}')
             analyzer_single_pp_group = self.process_single_pp_group(pp_group_id, folder)
             self.analysis_list.append(analyzer_single_pp_group)
+            break
         #self.gather_infos_from_all_ranks()
         # self.analyze_anomalies()
         #self.post_process()

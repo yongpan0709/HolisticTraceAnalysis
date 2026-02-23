@@ -26,7 +26,6 @@ from hta.configs.default_values import DEFAULT_TRACE_DIR
 from hta.configs.parser_config import ParserConfig
 from hta.utils.utils import get_mp_pool_size, normalize_path
 from hta.common.trace_filter import NameFilter
-from hta.utils.parallel_state import get_next_pipeline_rank, is_first_stage, is_last_stage
 from hta.utils.utils import add_rank_to_filename, apply_function_for_parallel
 from hta.common.trace_call_graph import CallGraph
 from hta.utils.parallel_state import RankGenerator
@@ -50,14 +49,9 @@ def keep_comm_span_only(trace_df):
         'mccl:recv', 
         'finalize_model_grads',
         'step',
-        # 'step_with_ready_grads',
-        # '_copy_model_grads_to_main_grads',
-        # '_unscale_main_grads_and_check_for_nan',
-        #'clip_grad_norm',
-        # '_copy_main_params_to_model_params',
-        # '_copy_main_params_to_model_params',
         'logical_and_across_model_parallel_group',
         'reduce_max_stat_across_model_parallel_group',
+        'should_run_forward_backward',
         #'mccl:all_reduce'
     ]
     filter_comm = NameFilter(create_regex_for_prefix_match(comm_names_list))

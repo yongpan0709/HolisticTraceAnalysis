@@ -7,6 +7,7 @@ from __future__ import annotations
 import gzip
 import json
 import multiprocessing as mp
+from abc import ABC, abstractmethod
 import os
 import sys
 import time
@@ -31,31 +32,6 @@ from hta.common.trace_call_graph import CallGraph
 from hta.utils.parallel_state import RankGenerator
 from hta.common.trace_file import get_trace_files
 
-# Todo: func list
-def keep_comm_span_only(trace_df):
-    comm_names_list = [
-        'forward_step', 
-        'backward_step', 
-        'recv_forward', 
-        'recv_backward', 
-        'send_forward', 
-        'send_backward', 
-        'send_forward_recv_backward', 
-        'send_backward_recv_forward', 
-        'send_forward_recv_forward',
-        'send_backward_recv_backward',
-        # useing batch_isend_irecv
-        'mccl:send', 
-        'mccl:recv', 
-        'finalize_model_grads',
-        'step',
-        'logical_and_across_model_parallel_group',
-        'reduce_max_stat_across_model_parallel_group',
-        'should_run_forward_backward',
-        #'mccl:all_reduce'
-    ]
-    filter_comm = NameFilter(create_regex_for_prefix_match(comm_names_list))
-    return filter_comm(trace_df)
 
 def parallel_callgraph_create(rank_id, trace_file):
     logger.debug(f'rank id: {rank_id}, trace_file: {trace_file}')
@@ -72,8 +48,9 @@ def parallel_callgraph_create(rank_id, trace_file):
     return rank_id, full_df[full_df['s_cat'] == 'user_annotation' ]
 
 # Todo: Does the pp group trace class need to know information about other tp, ep, dp groups?
-class MegatronPipelineParrallelGroupTrace():
-    """MegatronPipelineParrallelGroupTrace class for Megatron-LM with Pipeline Parallelism group.
+class MegatronPipelineParallelGroupTraceBase(ABC):
+    """
+    MegatronPipelineParallelGroupTraceBase class for Megatron-LM with Pipeline Parallel group.
     Models are getting larger; load one pp group at a time to avoid OOM (out of memory) and slow parsing errors.
     """
     def __init__(
@@ -85,7 +62,7 @@ class MegatronPipelineParrallelGroupTrace():
         pp = -1,
         ep = -1,
         cp: int =1, order: str ="tp-cp-ep-dp-pp",
-        pp_schedule: str='1f1b',
+        pp_schedule: str = "1f1b",
         vpp_size = -1,
     ) -> None:
         if trace_files is None:
@@ -113,11 +90,15 @@ class MegatronPipelineParrallelGroupTrace():
         self.all_tensor_parallel_group_ranks = self.expert_decoder_rank_generator.get_ranks('tp')
         self.all_pipeline_parallel_group_ranks = self.expert_decoder_rank_generator.get_ranks('pp')
         self.with_gpu_kernel = False
-        self.traces_comm_only : Dict[int, pd.DataFrame] = {}
+        self.traces_comm_only: Dict[int, pd.DataFrame] = {}
         #self.pp_group_trace: Dict[int, Trace] = {}
-        self.full_dfs : Dict[int, pd.DataFrame] = {}
+        self.full_dfs: Dict[int, pd.DataFrame] = {}
         self.is_parsed_per_pp_group: Dict[int, bool] = {}
-            
+
+    # def get_ranks(self, pp_group_id: int = 0) -> List[int]:
+    #     """返回指定 PP 组内的 rank 列表。"""
+    #     return self.all_pipeline_parallel_group_ranks[pp_group_id]
+
     def parse_traces_per_pp_group(self, pp_group_id=0) -> None:
         if self.is_parsed_per_pp_group.get(pp_group_id, False):
             logger.warning("Traces are already parsed and loaded!")
@@ -133,81 +114,40 @@ class MegatronPipelineParrallelGroupTrace():
             self.full_dfs[rank_id] = main_stack_df
         self.is_parsed_per_pp_group[pp_group_id] = True
 
-        #self.pp_group_trace[pp_group_id] = Trace(
-        #    trace_files={rank: self.trace_files[rank] for rank in self.all_pipeline_parallel_group_ranks[pp_group_id]},
-        #    trace_dir=self.trace_dir
-        #)
-        #self.pp_group_trace[pp_group_id].load_traces(include_last_profiler_step=include_last_profiler_step, use_multiprocessing=True)
-        #self.pp_group_trace[pp_group_id].decode_symbol_ids(use_shorten_name=False)
-        #self.is_parsed_per_pp_group[pp_group_id] = True
-        
-        #self.is_parsed = True
-        #self.set_rank_info()
-    
+    @abstractmethod
+    def set_self_microbatch_id(self, trace_df: pd.DataFrame) -> None:
+        """根据当前 PP 算法为 trace 打上 micro-batch id(forward/backward 等）。子类必须实现。"""
+        pass
 
-    @staticmethod
-    def set_self_microbatch_id(trace_df):
-        trace_df.sort_values(by=['ts', 'dur'], ascending=[True, False], inplace=True)
+    @abstractmethod
+    def set_recv_send_microbatch_id(self, trace_df: pd.DataFrame) -> None:
+        """根据 send/recv 与 micro-batch 关系设置 recv_prev/recv_next/send_prev/send_next。子类必须实现。"""
+        pass
 
-        # 初始化micro_batch_id列
-        trace_df['micro_batch_id_forward'] = -1
-        trace_df['micro_batch_id_backward'] = -1
-        # 标记包含'recv_forward'和'recv_backward'的行
-        trace_df['recv_forward'] = trace_df['s_name'].str.contains('recv_forward').astype(int).cumsum() - 1
-        trace_df['recv_backward'] = trace_df['s_name'].str.contains('recv_backward').astype(int).cumsum() - 1
-
-        # 更新'micro_batch_id_forward'和'micro_batch_id_backward'
-        trace_df.loc[trace_df['s_name'].str.contains('forward'), 'micro_batch_id_forward'] = trace_df['recv_forward']
-        trace_df.loc[trace_df['s_name'].str.contains('backward'), 'micro_batch_id_backward'] = trace_df['recv_backward']
-
-        # 移除辅助列
-        trace_df.drop(['recv_forward', 'recv_backward'], axis=1, inplace=True)
-    
-    # batch_isend_irecv
-    @staticmethod
-    def set_recv_send_microbatch_id(trace_df):
-        trace_df['send_prev'] = -1
-        trace_df['send_next'] = -1
-        trace_df['recv_prev'] = -1
-        trace_df['recv_next'] = -1
-
-        trace_df.loc[trace_df['s_name'].str.contains('recv_forward', regex=False), 'recv_prev'] = trace_df['micro_batch_id_forward']
-        trace_df.loc[trace_df['s_name'].str.contains('recv_backward', regex=False), 'recv_next'] = trace_df['micro_batch_id_backward']
-        trace_df.loc[trace_df['s_name'].str.contains('send_forward', regex=False), 'send_next'] = trace_df['micro_batch_id_forward']
-        trace_df.loc[trace_df['s_name'].str.contains('send_backward', regex=False), 'send_prev'] = trace_df['micro_batch_id_backward']
-    
     # Use: func annotations
+    @abstractmethod
     def process_pipeline_start(self, df):
         #if is_first_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
-        df.loc[df['s_name'].str.contains('recv_forward'), 'recv_prev'] = -1
-        df.loc[df['s_name'].str.contains('send_backward'), 'send_prev'] = -1
+        pass
 
+    @abstractmethod
     def process_pipeline_end(self, df):
         #if is_last_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
-        df.loc[df['s_name'].str.contains('recv_backward'), 'recv_next'] = -1
-        df.loc[df['s_name'].str.contains('send_forward'), 'send_next'] = -1
+        pass
 
-    def set_micro_batch_id(self, pp_group_id=0):
-        ranks = self.all_pipeline_parallel_group_ranks[pp_group_id]
-        logger.info(f'In set micro batch id: ranks: {ranks}')
-        for rank in ranks:
-            self.set_self_microbatch_id(self.full_dfs[rank])
-            self.set_recv_send_microbatch_id(self.full_dfs[rank])
-        self.process_pipeline_start(self.full_dfs[ranks[0]])
-        self.process_pipeline_end(self.full_dfs[ranks[-1]])
+    @abstractmethod
+    def set_micro_batch_id(self, pp_group_id: int = 0) -> None:
+        """为指定 PP 组内各 rank 的 trace 设置 micro-batch id，由子类的 set_self_microbatch_id/set_recv_send_microbatch_id 实现具体算法。"""
+        pass
     
+    @abstractmethod
     def filter_comm_only_traces(self, pp_group_id=0):
-        for rank in self.all_pipeline_parallel_group_ranks[pp_group_id]:
-            self.traces_comm_only[rank] = keep_comm_span_only(self.full_dfs[rank])
+        pass
     
+    @abstractmethod
     def get_p2p_ranks_pairs(self, ranks):
-        if len(ranks) < 2: return []
-        # Todo: double check
-        ranks_sorted = sorted(ranks)
-        p2p_devices_pairs = []
-        for i in range(len(ranks) - 1):
-            p2p_devices_pairs.append([ranks[i], ranks[i+1]])
-        return p2p_devices_pairs 
+        # different pp schedule algorithms, the pairs are different
+        pass
 
     def get_useful_trace_df(self, trace_df):
         return trace_df[~(trace_df[['send_prev', 'send_next', 'recv_prev', 'recv_next']] < 0).all(axis=1)]
@@ -333,22 +273,22 @@ class MegatronPipelineParrallelGroupTrace():
         trace_df_all_ranks = self.combine_into_one_trace(traces)
         save_trace_df_to_file(trace_df_all_ranks, save_path, trace_df_p2p_flow_events)
     
-    def set_rank_info(self):
-        for rank in self.get_ranks():
-            self.traces[rank]['rank'] = rank    
+    # def set_rank_info(self):
+    #     for rank in self.get_ranks():
+    #         self.traces[rank]['rank'] = rank    
 
 
-    def save_traces(self, file_path, ranks=None):
-        if ranks is None:
-            effective_ranks = self.get_ranks()
-        else:
-            effective_ranks = set(ranks).intersection(set(self.get_ranks()))
-        inputs = []
-        for rank in effective_ranks:
-            file_path_with_rank = add_rank_to_filename(file_path, rank)
-            inputs.append([self.traces[rank], file_path_with_rank, None, self.meta_data[rank]])
-        apply_function_for_parallel(save_trace_df_to_file, inputs)
-    
+    # def save_traces(self, file_path, ranks=None):
+    #     if ranks is None:
+    #         effective_ranks = self.get_ranks()
+    #     else:
+    #         effective_ranks = set(ranks).intersection(set(self.get_ranks()))
+    #     inputs = []
+    #     for rank in effective_ranks:
+    #         file_path_with_rank = add_rank_to_filename(file_path, rank)
+    #         inputs.append([self.traces[rank], file_path_with_rank, None, self.meta_data[rank]])
+    #     apply_function_for_parallel(save_trace_df_to_file, inputs)
+
     @staticmethod
     def combine_into_one_trace(traces_dict: dict):
         all_trace_dfs = []
@@ -357,9 +297,10 @@ class MegatronPipelineParrallelGroupTrace():
             all_trace_dfs.append(trace_df)
         trace_df = pd.concat(all_trace_dfs, ignore_index=True)
         return trace_df
-    
+
     @staticmethod
     def display_traces_info(traces):
         first_trace_df = next(iter(traces.values()))
         logger.info(f'total {len(traces)} traces, and each trace has {len(first_trace_df)} items')
         logger.info(first_trace_df['s_cat'].value_counts())
+

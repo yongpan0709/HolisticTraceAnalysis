@@ -62,8 +62,8 @@ class MegatronPipelineParallelGroupTraceBase(ABC):
         pp = -1,
         ep = -1,
         cp: int =1, order: str ="tp-cp-ep-dp-pp",
-        pp_schedule: str = "1f1b",
-        vpp_size = -1,
+        # pp_schedule: str = "1f1b",
+        # vpp_size = -1,
     ) -> None:
         if trace_files is None:
             assert os.path.exists(trace_dir), f"Trace directory {trace_dir} does not exist!"
@@ -75,8 +75,8 @@ class MegatronPipelineParallelGroupTraceBase(ABC):
         self.pipeline_parallel_size = pp
         self.expert_model_parallel_size = ep
         self.context_parallel_size = cp
-        self.pp_schedule = pp_schedule
-        self.vpp_size = vpp_size
+        # self.pp_schedule = pp_schedule
+        # self.vpp_size = vpp_size
         self.expert_decoder_rank_generator = RankGenerator(
             tp=tp,
             ep=ep,
@@ -114,37 +114,58 @@ class MegatronPipelineParallelGroupTraceBase(ABC):
             self.full_dfs[rank_id] = main_stack_df
         self.is_parsed_per_pp_group[pp_group_id] = True
 
-    @abstractmethod
+    def etl_traces_per_pp_group(self, redirect_trace_dir, filter_out_funcs, pp_group_id=0) -> None:
+        if self.is_parsed_per_pp_group.get(pp_group_id, False):
+            logger.warning("Traces are already parsed and loaded!")
+            return
+        tasks = []
+        t0 = time.perf_counter()
+        for rank in self.all_pipeline_parallel_group_ranks[pp_group_id]:
+            trace_file = self.trace_files[rank]
+            logger.debug(f'rank {rank} trace file:{trace_file}')
+            filename = os.path.basename(trace_file)
+            redirect_new_trace_path = os.path.join(redirect_trace_dir, filename)
+            tasks.append((trace_file, redirect_new_trace_path))
+        num_procs = min(mp.cpu_count(), len(self.all_pipeline_parallel_group_ranks[pp_group_id]))
+        with mp.get_context("fork").Pool(num_procs) as pool:
+            results = pool.starmap(filter_out_funcs, tasks)
+            pool.close()
+            pool.join()
+        t1 = time.perf_counter()
+        logger.debug(f"calculating critical path took {t1 - t0:2f} seconds")
+        self.is_parsed_per_pp_group[pp_group_id] = True
+
+    # @abstractmethod
     def set_self_microbatch_id(self, trace_df: pd.DataFrame) -> None:
         """根据当前 PP 算法为 trace 打上 micro-batch id(forward/backward 等）。子类必须实现。"""
         pass
 
-    @abstractmethod
+    # @abstractmethod
     def set_recv_send_microbatch_id(self, trace_df: pd.DataFrame) -> None:
         """根据 send/recv 与 micro-batch 关系设置 recv_prev/recv_next/send_prev/send_next。子类必须实现。"""
         pass
 
     # Use: func annotations
-    @abstractmethod
+    # @abstractmethod
     def process_pipeline_start(self, df):
         #if is_first_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
         pass
 
-    @abstractmethod
+    # @abstractmethod
     def process_pipeline_end(self, df):
         #if is_last_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
         pass
 
-    @abstractmethod
+    # @abstractmethod
     def set_micro_batch_id(self, pp_group_id: int = 0) -> None:
         """为指定 PP 组内各 rank 的 trace 设置 micro-batch id，由子类的 set_self_microbatch_id/set_recv_send_microbatch_id 实现具体算法。"""
         pass
     
-    @abstractmethod
+    # @abstractmethod
     def filter_comm_only_traces(self, pp_group_id=0):
         pass
     
-    @abstractmethod
+    # @abstractmethod
     def get_p2p_ranks_pairs(self, ranks):
         # different pp schedule algorithms, the pairs are different
         pass

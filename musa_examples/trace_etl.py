@@ -9,6 +9,8 @@ import os
 import time
 import multiprocessing as mp
 from trace_json_repair import fix_json_value_missing
+from megatron_pipeline_group.distribute_trace_analysis import DistributedMegatronTraceAnalysis
+  
 
 # filepath: /home/mccxadmin/Documents/py-projects/HolisticTraceAnalysis/filter-user-annotate.py
 # 加载 JSON 文件
@@ -66,40 +68,44 @@ def create_directory_if_not_exists(path):
 
 if __name__ == "__main__":
     # 示例用法
+    #ETL
+    #mpirun -allow-run-as-root -np 2 --bind-to none --hostfile ./hostfile --map-by ppr:2:node --wdir /Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/musa_examples python trace_etl.py --tp 1 --pp 4 --dp 2 --ep 8 --trace_dir /Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/20260206-overlap-1f1b
     parser = argparse.ArgumentParser(
         description="Generate version_info.mk file which will include ddk, musa_toolkit, mudnn, mccl download url.",
-        usage=f"python trace_etl.py --trace_dir <trace directory> --tp <tp size> --pp <pp size> --dp <dp size> --ep <ep size>")
+        usage=f"mpirun -allow-run-as-root -np 2 --bind-to none --hostfile ./hostfile --map-by ppr:2:node --wdir /Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/musa_examples python trace_etl.py --trace_dir <trace directory> --tp <tp size> --pp <pp size> --dp <dp size> --ep <ep size>")
     parser.add_argument('--trace_dir', required=True, help='trace directory')
-    parser.add_argument('--tp', required=True, help='tp size')
-    parser.add_argument('--pp', required=True, help='pp size')
-    parser.add_argument('--dp', required=True, help='dp size')
-    parser.add_argument('--ep', required=True, help='ep size')
+    parser.add_argument('--tp', type=int, required=True, help='tp size')
+    parser.add_argument('--pp', type=int, required=True, help='pp size')
+    parser.add_argument('--dp', type=int, required=True, help='dp size')
+    parser.add_argument('--ep', type=int, required=True, help='ep size')
     args = parser.parse_args()
     trace_dir = args.trace_dir
     trace_dir = trace_dir.rstrip('/')
     redirect_path = create_directory_if_not_exists(trace_dir+'-etl')
     print(f'Origin Trace_dir: {trace_dir}, After filtering Dir: {redirect_path}')
-    pp_groups = [
-        [0, 16, 32, 48]
-        #, [1, 17, 33, 49]
-    ]
-    #ranks = [0, 8, 16]
-    trace_files = get_trace_files(trace_dir)
-    t0 = time.perf_counter()
-    print(f'start ts: {t0}')
-    for ranks in pp_groups:
-        tasks = []
-        for rank in ranks:
-            #print(f'rank {rank} in ranks:{ranks}')
-            trace_file = trace_files[rank]
-            filename = os.path.basename(trace_file)
-            redirect_new_trace_path = os.path.join(redirect_path, filename)
-            tasks.append((trace_file, redirect_new_trace_path))
-        num_procs = min(mp.cpu_count(), len(ranks))
-        print(f'tasks: {tasks}')
-        with mp.get_context("fork").Pool(num_procs) as pool:
-            results = pool.starmap(filter_out_funcs, tasks)
-            pool.close()
-            pool.join()
-    t1 = time.perf_counter()
-    print(f"calculating critical path took {t1 - t0:2f} seconds")
+    dist_megatron_analysis = DistributedMegatronTraceAnalysis(trace_dir, args.tp, args.ep, args.dp, args.pp)
+    dist_megatron_analysis.pp_etl(redirect_path, filter_out_funcs)
+    # pp_groups = [
+    #     [0, 16, 32, 48]
+    #     #, [1, 17, 33, 49]
+    # ]
+    # #ranks = [0, 8, 16]
+    # trace_files = get_trace_files(trace_dir)
+    # t0 = time.perf_counter()
+    # print(f'start ts: {t0}')
+    # for ranks in pp_groups:
+    #     tasks = []
+    #     for rank in ranks:
+    #         #print(f'rank {rank} in ranks:{ranks}')
+    #         trace_file = trace_files[rank]
+    #         filename = os.path.basename(trace_file)
+    #         redirect_new_trace_path = os.path.join(redirect_path, filename)
+    #         tasks.append((trace_file, redirect_new_trace_path))
+    #     num_procs = min(mp.cpu_count(), len(ranks))
+    #     print(f'tasks: {tasks}')
+    #     with mp.get_context("fork").Pool(num_procs) as pool:
+    #         results = pool.starmap(filter_out_funcs, tasks)
+    #         pool.close()
+    #         pool.join()
+    # t1 = time.perf_counter()
+    # print(f"calculating critical path took {t1 - t0:2f} seconds")

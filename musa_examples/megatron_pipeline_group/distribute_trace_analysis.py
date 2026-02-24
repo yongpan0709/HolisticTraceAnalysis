@@ -2,6 +2,7 @@ from hta.utils.parallel_state import RankGenerator
 from hta.utils.utils import partition_files_across_directories, prepare_directory
 from hta.configs.config import logger
 from .megatron_pipeline_group_analysis import MegatronPipelineParallelGroupTraceAnalysis
+from .megatron_pipeline_group_base import MegatronPipelineParallelGroupTraceBase
 
 from mpi4py import MPI
 import os
@@ -237,7 +238,7 @@ class DistributedMegatronTraceAnalysis:
             logger.info(f'Analyzer saved to {cache_path}')
         return analyzer
     
-    def process_single_pp_group(self, pp_group_id, trace_dir, pp_schedule='1f1b'):
+    def process_single_pp_group(self, pp_group_id, trace_dir):
         # output_dir = os.path.join(trace_dir, 'output')
         # prepare_directory(output_dir, force_clear=True)
         
@@ -256,7 +257,7 @@ class DistributedMegatronTraceAnalysis:
             self.analysis_list.append(analyzer_single_pp_group)
             break
         #self.gather_infos_from_all_ranks()
-        # self.analyze_anomalies()
+        #self.analyze_anomalies()
         #self.post_process()
     
     def gather_infos_from_all_ranks(self):
@@ -505,3 +506,15 @@ class DistributedMegatronTraceAnalysis:
 
                 # Close the plot to release memory
                 plt.close(fig)
+
+    def etl_single_pp_group(self, pp_group_id, target_trace_dir, filter_out_funcs):
+        logger.info(f"pp_group_id: {pp_group_id}, in target trace dir: {target_trace_dir}")
+        t = MegatronPipelineParallelGroupTraceBase(None, self.trace_dir, dp=self.data_parallel_size, tp=self.tensor_parallel_size, pp=self.pipeline_parallel_size, ep=self.expert_model_parallel_size, cp=self.context_parallel_size)
+        t.etl_traces_per_pp_group(target_trace_dir, filter_out_funcs, pp_group_id=pp_group_id)
+        
+    def pp_etl(self, target_trace_dir, filter_out_funcs):
+        # print(f'assigned tasks:{self.assigned_tasks}')
+        for pp_group_id, _ in self.assigned_tasks:
+            logger.info(f'ETL pp group {pp_group_id}')
+            self.etl_single_pp_group(pp_group_id, target_trace_dir, filter_out_funcs)
+            

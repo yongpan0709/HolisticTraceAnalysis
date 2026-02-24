@@ -68,15 +68,20 @@ if __name__ == "__main__":
     # 示例用法
     parser = argparse.ArgumentParser(
         description="Generate version_info.mk file which will include ddk, musa_toolkit, mudnn, mccl download url.",
-        usage=f"python trace_etl.py --trace_dir <trace directory>")
+        usage=f"python trace_etl.py --trace_dir <trace directory> --tp <tp size> --pp <pp size> --dp <dp size> --ep <ep size>")
     parser.add_argument('--trace_dir', required=True, help='trace directory')
+    parser.add_argument('--tp', required=True, help='tp size')
+    parser.add_argument('--pp', required=True, help='pp size')
+    parser.add_argument('--dp', required=True, help='dp size')
+    parser.add_argument('--ep', required=True, help='ep size')
     args = parser.parse_args()
     trace_dir = args.trace_dir
     trace_dir = trace_dir.rstrip('/')
     redirect_path = create_directory_if_not_exists(trace_dir+'-etl')
     print(f'Origin Trace_dir: {trace_dir}, After filtering Dir: {redirect_path}')
     pp_groups = [
-        [0, 16, 32, 48], [1, 17, 33, 49]
+        [0, 16, 32, 48]
+        #, [1, 17, 33, 49]
     ]
     #ranks = [0, 8, 16]
     trace_files = get_trace_files(trace_dir)

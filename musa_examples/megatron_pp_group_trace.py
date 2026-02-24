@@ -85,6 +85,8 @@ class MegatronPipelineParrallelGroupTrace():
         pp = -1,
         ep = -1,
         cp: int =1, order: str ="tp-cp-ep-dp-pp",
+        pp_schedule: str='1f1b',
+        vpp_size = -1,
     ) -> None:
         if trace_files is None:
             assert os.path.exists(trace_dir), f"Trace directory {trace_dir} does not exist!"
@@ -96,6 +98,8 @@ class MegatronPipelineParrallelGroupTrace():
         self.pipeline_parallel_size = pp
         self.expert_model_parallel_size = ep
         self.context_parallel_size = cp
+        self.pp_schedule = pp_schedule
+        self.vpp_size = vpp_size
         self.expert_decoder_rank_generator = RankGenerator(
             tp=tp,
             ep=ep,
@@ -332,15 +336,7 @@ class MegatronPipelineParrallelGroupTrace():
     def set_rank_info(self):
         for rank in self.get_ranks():
             self.traces[rank]['rank'] = rank    
-    
-    def parallel_apply(self, function, need_rank=False):
-        if need_rank:
-            inputs = list(self.traces.items())
-        else:
-            inputs = list(self.traces.values())
-        results = apply_function_for_parallel(function, inputs)
-        keys = list(self.traces.keys())
-        return {key: result for key, result in zip(keys, results)}
+
 
     def save_traces(self, file_path, ranks=None):
         if ranks is None:

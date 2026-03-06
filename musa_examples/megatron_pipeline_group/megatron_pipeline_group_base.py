@@ -170,47 +170,12 @@ class MegatronPipelineParallelGroupTraceBase(ABC):
         # different pp schedule algorithms, the pairs are different
         pass
 
-    def get_useful_trace_df(self, trace_df):
-        return trace_df[~(trace_df[['send_prev', 'send_next', 'recv_prev', 'recv_next']] < 0).all(axis=1)]
+    # Todo: 
+    def calculate_time_per_iteration(self, rank):
+        trace_df = self.full_dfs[rank]
+        return trace_df[trace_df['s_name'].str.contains(r'^ProfilerStep#.*')]['kernel_span'].values[0]/1000
     
-    def get_p2p_trace_for_one_pair(self, rank_prev, rank_next):
-        """
-        Compute the point-to-point (P2P) communication times between two ranks.
-        Args:
-            rank_prev (int): The previous rank.
-            rank_next (int): The next rank.
 
-        Returns:
-            pd.DataFrame: A DataFrame containing the bidirectional P2P communication times.
-        """
-        # Get the DataFrames for the given ranks
-        trace_df_prev = self.full_dfs[rank_prev]
-        trace_df_next = self.full_dfs[rank_next]
-        useful_trace_df_prev = self.get_useful_trace_df(trace_df_prev)
-        useful_trace_df_next = self.get_useful_trace_df(trace_df_next)
-        # Compute forward P2P communication times
-        df_p2p_forward = self._compute_p2p_forward(useful_trace_df_prev, useful_trace_df_next)
-        # Link the dataframes of two adjacent pp i and pp i+1 by micro-bc id to get a forward-direction pair of send and recv
-        # After linking, take min(send, recv) and save it to the comm_time column
-        # Then copy the comm_time data to the new comm_time column of pp i
-        # Similarly, copy the comm_time data to the new comm_time column of pp i+1
-        self._update_comm_time(trace_df_prev, df_p2p_forward, 'index', 'index_on_prev')
-        self._update_comm_time(trace_df_next, df_p2p_forward, 'index', 'index_on_next')
-        # Compute backward P2P communication times
-        df_p2p_backward = self._compute_p2p_backward(useful_trace_df_prev, useful_trace_df_next)
-        self._update_comm_time(trace_df_prev, df_p2p_backward, 'index', 'index_on_prev')
-        self._update_comm_time(trace_df_next, df_p2p_backward, 'index', 'index_on_next')
-        # same as above. Calculate the pairwise send and recv funcs in the backward direction
-        # and compute min(send, recv) into comm_time.
-        # After completing the calculation of the actual comm_time for both forward and backward directions, 
-        # wait_time = send/recv - comm_time 
-        # Update the original DataFrames with the wait times
-        self._update_wait_time(trace_df_prev)
-        self._update_wait_time(trace_df_next)
-        # Concatenate the forward and backward P2P DataFrames
-        df_p2p_bidirection = pd.concat([df_p2p_forward, df_p2p_backward])
-
-        return df_p2p_bidirection
 
     def _compute_p2p_forward(self, df_prev, df_next):
         """
@@ -273,26 +238,15 @@ class MegatronPipelineParallelGroupTraceBase(ABC):
         df['wait_time'] = df['kernel_span'] - df['comm_time']
 
     
-    def establish_p2p_link_on_adjacent_ranks(self, pp_group_id=0):
-        ranks = self.all_pipeline_parallel_group_ranks[pp_group_id]
-        rank_pairs = self.get_p2p_ranks_pairs(ranks)
-        self.traces_p2p_comm = {}
-        for rank_prev, rank_next in rank_pairs:
-            df_p2p_bidirection = self.get_p2p_trace_for_one_pair(rank_prev, rank_next)
-            #df_p2p_bidirection.to_csv(f'p2p_trace_rank_{rank_prev}_{rank_next}.csv', index=False)
-            self.traces_p2p_comm[rank_prev] = df_p2p_bidirection
-        
-        self.trace_df_p2p_flow_events = self.combine_into_one_trace(self.traces_p2p_comm)
-    
     def save_traces_with_p2p_comm(self, save_path, traces=None, trace_df_p2p_flow_events=None, meta_data=None):
         if traces is None:
             traces = self.traces
-        if trace_df_p2p_flow_events is None:
-            trace_df_p2p_flow_events = self.trace_df_p2p_flow_events
+        #if trace_df_p2p_flow_events is None:
+        #    trace_df_p2p_flow_events = self.trace_df_p2p_flow_events
         #if meta_data is None:
         #    meta_data = self.meta_data
         trace_df_all_ranks = self.combine_into_one_trace(traces)
-        save_trace_df_to_file(trace_df_all_ranks, save_path, trace_df_p2p_flow_events)
+        save_trace_df_to_file(trace_df_all_ranks, save_path) # Todo: enhance flow event:, trace_df_p2p_flow_events)
     
     # def set_rank_info(self):
     #     for rank in self.get_ranks():
@@ -325,3 +279,26 @@ class MegatronPipelineParallelGroupTraceBase(ABC):
         logger.info(f'total {len(traces)} traces, and each trace has {len(first_trace_df)} items')
         logger.info(first_trace_df['s_cat'].value_counts())
 
+    def calculate_finalize_model_grads_step_time(self, sorted_trace_df):
+        pattern = r'^finalize_model_grads$'
+        finalize_model_grads_step_time = sorted_trace_df[sorted_trace_df['s_name'].str.contains(pattern)]['kernel_span'].values[0]
+        return finalize_model_grads_step_time/1000
+    
+    # Todo: func name
+    #       sorted_trace_df[sorted_trace_df['full_name'].str.contains(pattern, regex=True)]['dur'].values[0]   why use the first value
+    def calculate_optimizer_step_time_and_bubble(self, sorted_trace_df):
+        # Use regex to match 'full_name' with the pattern '?ProfilerStep?/step?'
+        # Todo: func name
+        # pattern = r'.*ProfilerStep.*/step.*'
+        pattern = r'^step$'
+        optimizer_step_time = sorted_trace_df[sorted_trace_df['s_name'].str.contains(pattern)]['kernel_span'].values[0]
+        #if first_stage_optimizer_step_time is None:
+        #    first_stage_optimizer_step_time = optimizer_step_time
+        #bubble_time_final = optimizer_step_time - first_stage_optimizer_step_time
+        #return bubble_time_final, first_stage_optimizer_step_time, optimizer_step_time
+        return optimizer_step_time/1000
+    
+    def calculate_logical_and_across_model_parallel_group_time(self, sorted_trace_df):
+        pattern = r'^logical_and_across_model_parallel_group$'
+        logical_and_across_model_parallel_group_time = sorted_trace_df[sorted_trace_df['s_name'].str.contains(pattern)]['kernel_span'].values[0]
+        return logical_and_across_model_parallel_group_time/1000

@@ -14,6 +14,7 @@ import time
 import tracemalloc
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from hta.utils import parallel_state
 import numpy as np
 
 import pandas as pd
@@ -33,6 +34,124 @@ from hta.utils.parallel_state import RankGenerator
 from hta.common.trace_file import get_trace_files
 from .megatron_pipeline_group_base import MegatronPipelineParallelGroupTraceBase
 
+def get_pp_rank_microbatches(
+    num_microbatches,
+    num_devices,
+    device_id,
+    num_stages_per_device,
+    microbatch_group_size_per_vp_stage,
+):
+    """Get the number of total, warmup, and remaining microbatches in PP scheduling.
+    Default: microbatch_group_size_per_vp_stage = pipeline_model_parallel_size
+    """
+    total_num_microbatches = num_microbatches * num_stages_per_device
+
+    if num_devices > 1:
+        # Run (num_model_chunks-1)*microbatch_group_size_per_vp_stage on
+        # all workers, followed by more microbatches after depending on
+        # stage ID (more forward passes for earlier stages, later stages can
+        # immediately start with 1F1B).
+        num_warmup_microbatches = (num_devices - device_id - 1) * 2
+        num_warmup_microbatches += (
+            num_stages_per_device - 1
+        ) * microbatch_group_size_per_vp_stage
+    else:
+        # forward_backward_no_pipelining
+        num_warmup_microbatches = 1
+
+    if num_warmup_microbatches >= total_num_microbatches:
+        num_warmup_microbatches = total_num_microbatches
+
+    return num_warmup_microbatches
+
+
+def get_schedule_table(
+    num_microbatches, num_model_chunks, microbatch_group_size_per_vp_stage
+):
+    """Get the schedule table for PP scheduling.
+    num_model_chunks=config.num_stages_per_device
+
+    Create a tunable schedule lookup table.
+    The schedule lookup table uses the virtual_microbatch_id to find the corresponding microbatch_id and model_chunk_id.
+    For example, the tunable schedule table for PP2 N3M5 with VP2 is constructed as below:
+    virtual_microbatch_id | 0 1 2 3 4 5 6 7 8 9
+    microbatch_id         | 0 1 2 0 1 2 3 4 3 4
+    model_chunk_id        | 0 0 0 1 1 1 0 0 1 1
+    """
+    schedule_table = []
+    for min_microbatch_id_in_group in range(
+        0, num_microbatches, microbatch_group_size_per_vp_stage
+    ):
+        if (
+            min_microbatch_id_in_group + microbatch_group_size_per_vp_stage
+            >= num_microbatches
+        ):
+            # Construct schedule for the last microbatch group
+            schedule_table.extend(
+                [
+                    (microbatch_id, model_chunk_id)
+                    for model_chunk_id in range(num_model_chunks)
+                    for microbatch_id in range(
+                        min_microbatch_id_in_group, num_microbatches
+                    )
+                ]
+            )
+        else:
+            # Construct schedule for other microbatch groups
+            schedule_table.extend(
+                [
+                    (microbatch_id, model_chunk_id)
+                    for model_chunk_id in range(num_model_chunks)
+                    for microbatch_id in range(
+                        min_microbatch_id_in_group,
+                        min_microbatch_id_in_group + microbatch_group_size_per_vp_stage,
+                    )
+                ]
+            )
+    return schedule_table
+
+def convert_schedule_table_to_order(
+    num_warmup_microbatches, num_model_chunks, schedule_table
+):
+    """Convert a tunable schedule lookup table to the te.make_graphed_callables() accepted
+    order format. For example, the tunable schedule table for PP2 N3M5 with VP2 is as below:
+    virtual_microbatch_id | 0 1 2 3 4 5 6 7 8 9
+    microbatch_id         | 0 1 2 0 1 2 3 4 3 4
+    model_chunk_id        | 0 0 0 1 1 1 0 0 1 1
+
+    Then the forward backward separated order is:
+    forward               | 1 1 1 2 2 2 1 1 2 2
+    backward              | -2 -2 -2 -1 -1 -1 -2 -2 -1 -1
+
+    If num_warmup_microbatches is 5, the output order is:
+    1 1 1 2 2 2 -2 1 -2 1 -2 2 -1 2 -1 -1 -2 -2 -1 -1
+    """
+    _, model_chunk_id_table = zip(*schedule_table)
+    forward_order = [chunk_id + 1 for chunk_id in model_chunk_id_table]
+    backward_order = [chunk_id - num_model_chunks for chunk_id in model_chunk_id_table]
+    order = forward_order[:num_warmup_microbatches]
+    for i in range(num_warmup_microbatches, len(forward_order)):
+        order.append(forward_order[i])
+        order.append(backward_order[i - num_warmup_microbatches])
+    if num_warmup_microbatches > 0:
+        order.extend(backward_order[-num_warmup_microbatches:])
+    return forward_order, backward_order, order
+
+def create_regex_for_match(prefixes):
+    """
+    Creates a regex pattern that matches any string starting with any of the provided prefixes.
+    
+    Parameters:
+    - prefixes (list): A list of prefixes to match at the start of a string.
+    
+    Returns:
+    - str: A regex pattern string.
+    """
+    # Escape each prefix to handle special regex characters
+    # Join the escaped prefixes with the regex OR operator '|'
+    # name_pattern = '^(' + '|'.join(escaped_prefixes) + ')'
+    name_pattern = '^(' + '|'.join(prefixes) + ')$'
+    return name_pattern
 
 class MegatronPipelineParallel1F1BInterleavedGroupTrace(MegatronPipelineParallelGroupTraceBase):
     """1F1B interleaved (One-Forward-One-Backward) 调度下的 PP group trace 分析。"""
@@ -45,54 +164,50 @@ class MegatronPipelineParallel1F1BInterleavedGroupTrace(MegatronPipelineParallel
         ep = -1,
         cp: int =1, 
         order: str ="tp-cp-ep-dp-pp",
-        pp_schedule: str = "1f1b",
+        pp_schedule: str = "1f1b-interleaved",
         vpp_size = -1,
         ) -> None:
         super().__init__(trace_files, trace_dir, dp, tp, pp, ep, cp, order)
         self.pp_schedule = pp_schedule
         self.vpp_size = vpp_size
 
+    def preprocess_trace_df(self, rank):
+        #trace_df = self.full_dfs[rank]
+        trace_df = self.traces_comm_only[rank]
+        sorted_trace_df = trace_df.sort_values(by=['ts', 'kernel_span'], ascending=[True, False])
+        # Use regex to find the first occurrence of any 'recv_forward*' event
+        # Todo: communication on mooncake
+        # First 'recv_forward' event is the start of the first forward pass, and we want to keep all events after that for better analysis of PP scheduling. 
+        # recv_forward_index = sorted_trace_df[sorted_trace_df['s_name'].str.contains(r'^recv_forward$')].index
+        #Todo: uncomment the following line after fixing the recv_forward event name in mooncake
+        #first_recv_forward_index = recv_forward_index[0]
+        # Keep only the rows from the first 'recv_forward*' event onwards
+        #sorted_trace_df = sorted_trace_df.loc[first_recv_forward_index:]
 
-    def set_self_microbatch_id(self, trace_df: pd.DataFrame) -> None:
+        #sorted_trace_df.to_csv(f'preprocess_trace_df-after-{rank}.csv')
+        return sorted_trace_df
+
+
+    def set_vpp_stage_id(self, trace_df: pd.DataFrame, stage_id: int) -> None:
         trace_df.sort_values(by=['ts', 'dur'], ascending=[True, False], inplace=True)
-        trace_df['micro_batch_id_forward'] = -1
-        trace_df['micro_batch_id_backward'] = -1
-        trace_df['recv_forward'] = trace_df['s_name'].str.contains('recv_forward').astype(int).cumsum() - 1
-        trace_df['recv_backward'] = trace_df['s_name'].str.contains('recv_backward').astype(int).cumsum() - 1
-        trace_df.loc[trace_df['s_name'].str.contains('forward'), 'micro_batch_id_forward'] = trace_df['recv_forward']
-        trace_df.loc[trace_df['s_name'].str.contains('backward'), 'micro_batch_id_backward'] = trace_df['recv_backward']
-        trace_df.drop(['recv_forward', 'recv_backward'], axis=1, inplace=True)
+        trace_df['vpp_stage_id'] = 0
+        num_microbatches = self.get_num_microbatches(trace_df)
+        num_warmup_microbatches = get_pp_rank_microbatches(num_microbatches, self.pipeline_parallel_size, stage_id, self.vpp_size, self.pipeline_parallel_size)
+        schedule_table = get_schedule_table(num_microbatches, self.vpp_size, self.pipeline_parallel_size)
+        fwd_order, bwd_order, _ = convert_schedule_table_to_order(num_warmup_microbatches, self.vpp_size, schedule_table)
+        trace_df.loc[trace_df['s_name'].str.match(pat=r'^forward_step$'), 'vpp_stage_id'] = fwd_order
+        trace_df.loc[trace_df['s_name'].str.match(pat=r'^backward_step$'), 'vpp_stage_id'] = bwd_order
 
-    def set_recv_send_microbatch_id(self, trace_df: pd.DataFrame) -> None:
-        trace_df['send_prev'] = -1
-        trace_df['send_next'] = -1
-        trace_df['recv_prev'] = -1
-        trace_df['recv_next'] = -1
-        trace_df.loc[trace_df['s_name'].str.contains('recv_forward', regex=False), 'recv_prev'] = trace_df['micro_batch_id_forward']
-        trace_df.loc[trace_df['s_name'].str.contains('recv_backward', regex=False), 'recv_next'] = trace_df['micro_batch_id_backward']
-        trace_df.loc[trace_df['s_name'].str.contains('send_forward', regex=False), 'send_next'] = trace_df['micro_batch_id_forward']
-        trace_df.loc[trace_df['s_name'].str.contains('send_backward', regex=False), 'send_prev'] = trace_df['micro_batch_id_backward']
 
-    # Use: func annotations
-    def process_pipeline_start(self, df):
-        #if is_first_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
-        df.loc[df['s_name'].str.contains('recv_forward'), 'recv_prev'] = -1
-        df.loc[df['s_name'].str.contains('send_backward'), 'send_prev'] = -1
-
-    def process_pipeline_end(self, df):
-        #if is_last_stage(rank, self.tensor_parallel_size, self.pipeline_parallel_size, self.data_parallel_size):
-        df.loc[df['s_name'].str.contains('recv_backward'), 'recv_next'] = -1
-        df.loc[df['s_name'].str.contains('send_forward'), 'send_next'] = -1
+    def get_num_microbatches(self, trace_df):
+        return int(len(trace_df[trace_df['s_name'].str.match(pat=r'^forward_step$')]) / self.vpp_size)
 
     def set_micro_batch_id(self, pp_group_id: int = 0) -> None:
         """为指定 PP 组内各 rank 的 trace 设置 micro-batch id，由子类的 set_self_microbatch_id/set_recv_send_microbatch_id 实现具体算法。"""
         ranks = self.all_pipeline_parallel_group_ranks[pp_group_id]
-        logger.info(f'In set micro batch id: ranks: {ranks}')
-        for rank in ranks:
-            self.set_self_microbatch_id(self.full_dfs[rank])
-            self.set_recv_send_microbatch_id(self.full_dfs[rank])
-        self.process_pipeline_start(self.full_dfs[ranks[0]])
-        self.process_pipeline_end(self.full_dfs[ranks[-1]])
+        logger.info(f'[1F1B interleaved] In set micro batch id: ranks: {ranks}')
+        for stage_id, rank in enumerate(ranks):
+            self.set_vpp_stage_id(self.traces_comm_only[rank], stage_id)
 
     def get_p2p_ranks_pairs(self, ranks):
         if len(ranks) < 2: return []
@@ -117,19 +232,124 @@ class MegatronPipelineParallel1F1BInterleavedGroupTrace(MegatronPipelineParallel
             'send_backward_recv_forward', 
             'send_forward_recv_forward',
             'send_backward_recv_backward',
-            # useing batch_isend_irecv
-            'mccl:send', 
-            'mccl:recv', 
             'finalize_model_grads',
             'step',
             'logical_and_across_model_parallel_group',
             'reduce_max_stat_across_model_parallel_group',
             'should_run_forward_backward',
-            #'mccl:all_reduce'
         ]
-        filter_comm = NameFilter(create_regex_for_prefix_match(comm_names_list))
+        filter_comm = NameFilter(create_regex_for_match(comm_names_list))
         return filter_comm(trace_df)
 
     def filter_comm_only_traces(self, pp_group_id=0):
         for rank in self.all_pipeline_parallel_group_ranks[pp_group_id]:
             self.traces_comm_only[rank] = self.keep_comm_span_only(self.full_dfs[rank])
+        
+    def establish_p2p_link_on_adjacent_ranks(self, pp_group_id=0):
+        logger.info(f'[1F1B interleaved] Todo: establish p2p link on adjacent ranks for pp_group_id {pp_group_id}')
+    
+    def get_all_comm_df(self, sorted_trace_df, rank=None):
+        all_comm_df = sorted_trace_df[sorted_trace_df['num_kernels'] > 0]
+        all_comm_df = all_comm_df.sort_values(by="first_kernel_start")
+        """
+        Calculate idle intervals for communication events.
+        Using the start time and duration of communication events to calculate the end time of current event.
+        Then, using the start time of the next event and the end time of current event to calculate the idle interval between two consecutive communication events.
+        The interval will be set to the next event's idle_interval column. 
+        For example, send_forward_recv_forward event and forward_step event,
+        calculate the end ts of send_forward_recv_forward event 
+        end_ts = ts(send_forward_recv_forward) + dur(send_forward_recv_forward)
+        idle interval = ts(forward_step) - end_ts(send_forward_recv_forward)
+        idle interval will be set to forward_step's idle_interval column.
+        The idle interval of first event in all_comm_df should be equal to the first recv_forward event's cpu duration, since there is called wait for communication event before the first forward_step event, and the GPU is idle during that time.
+        """
+        all_comm_df["end_ts"] = all_comm_df.first_kernel_start + all_comm_df.kernel_span
+        all_comm_df["prev_end_ts"] = all_comm_df.end_ts.shift(1)
+        all_comm_df["idle_interval"] = all_comm_df["first_kernel_start"] - all_comm_df["prev_end_ts"]
+        all_comm_df = all_comm_df[all_comm_df['s_name'].str.match(pat=r'^(forward|backward)_step$')]
+        all_comm_df['idle_interval'].values[0] = self.full_dfs[rank].loc[self.full_dfs[rank]['s_name'].str.match(pat=r'^recv_forward$'), 'dur'].values[0]
+        return all_comm_df
+
+    def calculate_step_times(self, all_forward_steps_df, all_backward_steps_df):
+        num_model_chunks = self.vpp_size
+        forward_step_avg_time = []
+        forward_step_std_time = []
+        backward_step_avg_time = []
+        backward_step_std_time = []
+        
+        for vpp_stage_id in range(num_model_chunks):
+            fwd_vpp_stage_id = vpp_stage_id + 1
+            bwd_vpp_stage_id = -fwd_vpp_stage_id
+            forward_step_avg_time.append(
+                round(float(all_forward_steps_df.loc[all_forward_steps_df['vpp_stage_id'] == fwd_vpp_stage_id, 'kernel_span'].mean())/1000, 2)
+            )
+            forward_step_std_time.append(
+                round(float(all_forward_steps_df.loc[all_forward_steps_df['vpp_stage_id'] == fwd_vpp_stage_id, 'kernel_span'].std())/1000, 2)
+            )
+            backward_step_avg_time.append(
+                round(float(all_backward_steps_df.loc[all_backward_steps_df['vpp_stage_id'] == bwd_vpp_stage_id, 'kernel_span'].mean())/1000, 2)
+            )
+            backward_step_std_time.append(
+                round(float(all_backward_steps_df.loc[all_backward_steps_df['vpp_stage_id'] == bwd_vpp_stage_id, 'kernel_span'].std())/1000, 2)
+            )
+
+        compute_time_total = (all_forward_steps_df['kernel_span'].sum()/1000 + all_backward_steps_df['kernel_span'].sum()/1000)
+        return forward_step_avg_time, backward_step_avg_time, compute_time_total, forward_step_std_time, backward_step_std_time
+
+    def calculate_comm_time_total(self, all_comm_time_df):
+        return all_comm_time_df['idle_interval'].sum()/1000
+
+    def calculate_theoretical_bubble_time_warmup(self, all_comm_time_df, stage_id):
+        if stage_id == 0:
+            return 0.0
+        else:
+            theoretical_bubble_head_index = all_comm_time_df[all_comm_time_df['s_name'].str.match(pat=r'^forward_step$')].index[0]
+            return all_comm_time_df.loc[theoretical_bubble_head_index, 'idle_interval'].sum()/1000
+
+    def calculate_bubble_time_warmup(self, all_comm_time_df, stage_id):
+        num_warmup_microbatches = get_pp_rank_microbatches(self.get_num_microbatches(all_comm_time_df), self.pipeline_parallel_size, stage_id, self.vpp_size, self.pipeline_parallel_size)
+        fwd_step_in_head = all_comm_time_df[all_comm_time_df['s_name'].str.match(pat=r'^forward_step$')].index[:num_warmup_microbatches+1]
+        return all_comm_time_df.loc[fwd_step_in_head, 'idle_interval'].sum()/1000
+    
+    def calculate_theoretical_bubble_time_steady(self, all_comm_time_df, stage_id):
+        if stage_id == self.pipeline_parallel_size-1:
+            return 0.0
+        else:
+            bwd_index = all_comm_time_df[all_comm_time_df['s_name'].str.match(pat=r'^backward_step$')].index
+            if len(bwd_index) > 0:
+                return all_comm_time_df.loc[bwd_index[0], 'idle_interval']/1000
+            else:
+                return 0.0
+
+    def calculate_bubble_time_steady(self, all_comm_time_df, stage_id):
+        num_warmup_microbatches = get_pp_rank_microbatches(self.get_num_microbatches(all_comm_time_df), self.pipeline_parallel_size, stage_id, self.vpp_size, self.pipeline_parallel_size)
+        fwd_step = all_comm_time_df[all_comm_time_df['s_name'].str.match(pat=r'^forward_step$')]
+        fwd_step_in_steady = fwd_step.index[num_warmup_microbatches+1:]
+        bwd_step = all_comm_time_df[all_comm_time_df['s_name'].str.match(pat=r'^backward_step$')]
+        bwd_step_in_steady = bwd_step.index[:-num_warmup_microbatches]
+        return bwd_step.loc[bwd_step_in_steady, 'idle_interval'].sum()/1000 + fwd_step.loc[fwd_step_in_steady, 'idle_interval'].sum()/1000
+    
+    def calculate_theoretical_bubble_time_cooldown(self, all_comm_time_df, stage_id):
+        num_warmup_microbatches = get_pp_rank_microbatches(self.get_num_microbatches(all_comm_time_df), self.pipeline_parallel_size, stage_id, self.vpp_size, self.pipeline_parallel_size)
+        if stage_id == self.pipeline_parallel_size-1:
+            return 0.0
+        else:
+            bwd_index = all_comm_time_df[all_comm_time_df['s_name'].str.match(pat=r'^backward_step$')].index
+            if len(bwd_index) > 0:
+                bwd_step_in_cooldown = bwd_index[-num_warmup_microbatches:]
+                return all_comm_time_df.loc[bwd_step_in_cooldown[:self.pipeline_parallel_size-stage_id-1], 'idle_interval'].sum()/1000
+            else:
+                return 0.0
+        
+    def calculate_bubble_time_cooldown(self, all_comm_time_df, stage_id):
+        num_warmup_microbatches = get_pp_rank_microbatches(self.get_num_microbatches(all_comm_time_df), self.pipeline_parallel_size, stage_id, self.vpp_size, self.pipeline_parallel_size)
+        bwd_index = all_comm_time_df[all_comm_time_df['s_name'].str.match(pat=r'^backward_step$')].index
+        bwd_step_in_cooldown = bwd_index[-num_warmup_microbatches:]
+        return all_comm_time_df.loc[bwd_step_in_cooldown, 'idle_interval'].sum()/1000
+
+    # Todo: using mooncake, cannot get the accurate comm time and wait time
+    def calculate_true_comm_and_overhead_wait_time(self, all_comm_time_df):
+        return 0.0, 0.0
+    
+    def get_bubble_time_ratio_theoretical(self, num_microbatch):
+        return (self.pipeline_parallel_size - 1) / num_microbatch / self.vpp_size

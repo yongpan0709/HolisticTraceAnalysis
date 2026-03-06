@@ -142,27 +142,23 @@ class MegatronPipelineParallel1F1BGroupTrace(MegatronPipelineParallelGroupTraceB
         # sorted_trace_df.to_csv('sorted_trace_df-after-recv.csv')
         return sorted_trace_df
 
-    def calculate_time_per_iteration(self, rank):
-        trace_df = self.full_dfs[rank]
-        return trace_df[trace_df['s_name'].str.contains(r'^ProfilerStep#.*')]['kernel_span'].values[0]
-
-    def get_all_comm_df(self, sorted_trace_df):
+    def get_all_comm_df(self, sorted_trace_df, rank=None):
         return NameFilter(create_regex_for_prefix_match(['send_forward',  'recv_forward', 'send_backward',  'recv_backward']))(sorted_trace_df)
 
     def calculate_comm_time_total(self, all_comm_time_df):
-        return all_comm_time_df['kernel_span'].sum()
+        return all_comm_time_df['kernel_span'].sum()/1000
     
     def calculate_theoretical_bubble_time_warmup(self, all_comm_time_df, stage_id):
         if stage_id == 0:
             return 0.0
         else:
             theoretical_bubble_head_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^recv_forward(?:_\d+)?$')].index[0]
-            return all_comm_time_df.loc[theoretical_bubble_head_index, 'wait_time']
+            return all_comm_time_df.loc[theoretical_bubble_head_index, 'wait_time']/1000
 
-    def calculate_bubble_time_warmup(self, all_comm_time_df):
+    def calculate_bubble_time_warmup(self, all_comm_time_df, stage_id=None):
         recv_index_in_head = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^recv_forward(?:_\d+)?$')].index
         send_index_in_head = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_forward(?:_\d+)?$')].index
-        return all_comm_time_df.loc[recv_index_in_head, 'wait_time'].sum() + all_comm_time_df.loc[send_index_in_head, 'wait_time'].sum()
+        return all_comm_time_df.loc[recv_index_in_head, 'wait_time'].sum()/1000 + all_comm_time_df.loc[send_index_in_head, 'wait_time'].sum()/1000
 
     def calculate_theoretical_bubble_time_steady(self, all_comm_time_df, stage_id):
         if stage_id == self.pipeline_parallel_size-1:
@@ -170,55 +166,31 @@ class MegatronPipelineParallel1F1BGroupTrace(MegatronPipelineParallelGroupTraceB
         else:
             send_forward_recv_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_forward_recv_backward.*')].index
             if len(send_forward_recv_backward_index) > 0:
-                return all_comm_time_df.loc[send_forward_recv_backward_index[0], 'wait_time']
+                return all_comm_time_df.loc[send_forward_recv_backward_index[0], 'wait_time']/1000
             else:
                 return 0.0
 
-    def calculate_bubble_time_steady(self, all_comm_time_df):
+    def calculate_bubble_time_steady(self, all_comm_time_df, stage_id=None):
         send_forward_recv_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_forward_recv_backward.*')].index
         send_backward_recv_forward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_backward_recv_forward.*')].index
-        return all_comm_time_df.loc[send_forward_recv_backward_index, 'wait_time'].sum() + all_comm_time_df.loc[send_backward_recv_forward_index, 'wait_time'].sum()
+        return all_comm_time_df.loc[send_forward_recv_backward_index, 'wait_time'].sum()/1000 + all_comm_time_df.loc[send_backward_recv_forward_index, 'wait_time'].sum()/1000
     
     def calculate_theoretical_bubble_time_cooldown(self, all_comm_time_df, stage_id):
         if stage_id == self.pipeline_parallel_size-1:
             return 0.0
         else:
             recv_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^recv_backward(?:_\d+)?$')].index
-            return all_comm_time_df.loc[recv_backward_index, 'wait_time'].sum()
+            return all_comm_time_df.loc[recv_backward_index, 'wait_time'].sum()/1000
 
-    def calculate_bubble_time_cooldown(self, all_comm_time_df):
+    def calculate_bubble_time_cooldown(self, all_comm_time_df, stage_id=None):
         send_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^send_backward(?:_\d+)?$')].index
         recv_backward_index = all_comm_time_df[all_comm_time_df['s_name'].str.contains(r'^recv_backward(?:_\d+)?$')].index
-        bubble_time_cooldown = all_comm_time_df.loc[send_backward_index, 'wait_time'].sum() + all_comm_time_df.loc[recv_backward_index, 'wait_time'].sum()
+        bubble_time_cooldown = all_comm_time_df.loc[send_backward_index, 'wait_time'].sum()/1000 + all_comm_time_df.loc[recv_backward_index, 'wait_time'].sum()/1000
         return bubble_time_cooldown
 
-    def calculate_finalize_model_grads_step_time(self, sorted_trace_df):
-        pattern = r'^finalize_model_grads$'
-        finalize_model_grads_step_time = sorted_trace_df[sorted_trace_df['s_name'].str.contains(pattern)]['kernel_span'].values[0]
-        return finalize_model_grads_step_time
-    
-    # Todo: func name
-    #       sorted_trace_df[sorted_trace_df['full_name'].str.contains(pattern, regex=True)]['dur'].values[0]   why use the first value
-    def calculate_optimizer_step_time_and_bubble(self, sorted_trace_df):
-        # Use regex to match 'full_name' with the pattern '?ProfilerStep?/step?'
-        # Todo: func name
-        # pattern = r'.*ProfilerStep.*/step.*'
-        pattern = r'^step$'
-        optimizer_step_time = sorted_trace_df[sorted_trace_df['s_name'].str.contains(pattern)]['kernel_span'].values[0]
-        #if first_stage_optimizer_step_time is None:
-        #    first_stage_optimizer_step_time = optimizer_step_time
-        #bubble_time_final = optimizer_step_time - first_stage_optimizer_step_time
-        #return bubble_time_final, first_stage_optimizer_step_time, optimizer_step_time
-        return optimizer_step_time
-    
-    def calculate_logical_and_across_model_parallel_group_time(self, sorted_trace_df):
-        pattern = r'^logical_and_across_model_parallel_group$'
-        logical_and_across_model_parallel_group_time = sorted_trace_df[sorted_trace_df['s_name'].str.contains(pattern)]['kernel_span'].values[0]
-        return logical_and_across_model_parallel_group_time
-
     def calculate_true_comm_and_overhead_wait_time(self, all_comm_time_df):
-        comm_time_true = all_comm_time_df['comm_time'].sum()
-        overhead_wait_time_total = all_comm_time_df['wait_time'].sum()
+        comm_time_true = all_comm_time_df['comm_time'].sum()/1000
+        overhead_wait_time_total = all_comm_time_df['wait_time'].sum()/1000
         return comm_time_true, overhead_wait_time_total
 
     # Todo: 'reduce_model_grads', 'step_', 'gather_model_params' 
@@ -228,6 +200,69 @@ class MegatronPipelineParallel1F1BGroupTrace(MegatronPipelineParallelGroupTraceB
                                                                  'logical_and_across_model_parallel_group',
                                                                  'reduce_max_stat_across_model_parallel_group']))(sorted_trace_df)
         #optimizer_df.to_csv(f'optimizer_df-stageid{stage_id}-rank{rank}.csv')
-        optimizer_time = optimizer_df['kernel_span'].sum()
+        optimizer_time = optimizer_df['kernel_span'].sum()/1000
         return optimizer_time - bubble_time_final
     
+    def get_useful_trace_df(self, trace_df):
+        return trace_df[~(trace_df[['send_prev', 'send_next', 'recv_prev', 'recv_next']] < 0).all(axis=1)]
+    
+    def get_p2p_trace_for_one_pair(self, rank_prev, rank_next):
+        """
+        Compute the point-to-point (P2P) communication times between two ranks.
+        Args:
+            rank_prev (int): The previous rank.
+            rank_next (int): The next rank.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing the bidirectional P2P communication times.
+        """
+        # Get the DataFrames for the given ranks
+        trace_df_prev = self.full_dfs[rank_prev]
+        trace_df_next = self.full_dfs[rank_next]
+        useful_trace_df_prev = self.get_useful_trace_df(trace_df_prev)
+        useful_trace_df_next = self.get_useful_trace_df(trace_df_next)
+        # Compute forward P2P communication times
+        df_p2p_forward = self._compute_p2p_forward(useful_trace_df_prev, useful_trace_df_next)
+        # Link the dataframes of two adjacent pp i and pp i+1 by micro-bc id to get a forward-direction pair of send and recv
+        # After linking, take min(send, recv) and save it to the comm_time column
+        # Then copy the comm_time data to the new comm_time column of pp i
+        # Similarly, copy the comm_time data to the new comm_time column of pp i+1
+        self._update_comm_time(trace_df_prev, df_p2p_forward, 'index', 'index_on_prev')
+        self._update_comm_time(trace_df_next, df_p2p_forward, 'index', 'index_on_next')
+        # Compute backward P2P communication times
+        df_p2p_backward = self._compute_p2p_backward(useful_trace_df_prev, useful_trace_df_next)
+        self._update_comm_time(trace_df_prev, df_p2p_backward, 'index', 'index_on_prev')
+        self._update_comm_time(trace_df_next, df_p2p_backward, 'index', 'index_on_next')
+        # same as above. Calculate the pairwise send and recv funcs in the backward direction
+        # and compute min(send, recv) into comm_time.
+        # After completing the calculation of the actual comm_time for both forward and backward directions, 
+        # wait_time = send/recv - comm_time 
+        # Update the original DataFrames with the wait times
+        self._update_wait_time(trace_df_prev)
+        self._update_wait_time(trace_df_next)
+        # Concatenate the forward and backward P2P DataFrames
+        df_p2p_bidirection = pd.concat([df_p2p_forward, df_p2p_backward])
+
+        return df_p2p_bidirection
+    
+    def establish_p2p_link_on_adjacent_ranks(self, pp_group_id=0):
+        ranks = self.all_pipeline_parallel_group_ranks[pp_group_id]
+        rank_pairs = self.get_p2p_ranks_pairs(ranks)
+        self.traces_p2p_comm = {}
+        for rank_prev, rank_next in rank_pairs:
+            df_p2p_bidirection = self.get_p2p_trace_for_one_pair(rank_prev, rank_next)
+            self.traces_p2p_comm[rank_prev] = df_p2p_bidirection
+        
+        self.trace_df_p2p_flow_events = self.combine_into_one_trace(self.traces_p2p_comm)
+    
+    def calculate_step_times(self, all_forward_steps_df, all_backward_steps_df):
+        forward_step_avg_time = all_forward_steps_df['kernel_span'].mean()/1000
+        backward_step_avg_time = all_backward_steps_df['kernel_span'].mean()/1000
+        compute_time_total = all_forward_steps_df['kernel_span'].sum()/1000 + all_backward_steps_df['kernel_span'].sum()/1000
+        return forward_step_avg_time, backward_step_avg_time, compute_time_total, all_forward_steps_df['kernel_span'].std()/1000, all_backward_steps_df['kernel_span'].std()/1000
+
+    def get_num_microbatches(self, trace_df):
+        return int(len(trace_df[trace_df['s_name'].str.match(pat=r'^forward_step$')]))
+    
+    def get_bubble_time_ratio_theoretical(self, num_microbatch):
+        return (self.pipeline_parallel_size - 1) / (self.pipeline_parallel_size - 1 + num_microbatch)

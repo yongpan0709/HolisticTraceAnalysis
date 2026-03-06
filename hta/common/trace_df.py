@@ -2,12 +2,10 @@ from typing import List, Tuple
 
 import pandas as pd
 import json
-from functools import reduce
-import operator
 import numpy as np
 
 from hta.common.trace_symbol_table import TraceSymbolTable
-from hta.configs.config import logger
+
 
 def get_iterations(df: pd.DataFrame) -> List[int]:
     """Extract the iteration numbers from a trace DataFrame.
@@ -211,121 +209,16 @@ def save_trace_df_to_file(df: pd.DataFrame, output_file: str, trace_df_p2p_comm_
     new_df['ph'] = 'X'
     # Todo: in interleaved PP, send_fwd_recv_fwd and send_bwd_recv_bwd execute asyn and in parallel with fwd_step or bwd_step
     # so for displaying in perfetto, it muse set them with different tids.
-    new_df.loc[new_df['name'].str.match(pat=r"^(send_forward_recv_forward|send_backward_recv_backward)$"), 'tid'] = 1
-    new_df.loc[new_df['name'].str.match(pat=r"^mccl:recv$"), 'tid'] = 2
-    new_df.loc[new_df['name'].str.match(pat=r"^mccl:send$"), 'tid'] = 3
+    #new_df.loc[new_df['name'].str.match(pat=r"^(send_forward_recv_forward|send_backward_recv_backward)$"), 'tid'] = 1
+    #new_df.loc[new_df['name'].str.match(pat=r"^mccl:recv$"), 'tid'] = 2
+    #new_df.loc[new_df['name'].str.match(pat=r"^mccl:send$"), 'tid'] = 3
     #new_df['args'] = df.apply(lambda row: {col: row[col] for col in row.index if col not in columns_to_keep + columns_to_drop}, axis=1)
 
     trace_data = meta_data.copy() if meta_data is not None else {}
     trace_events = new_df.to_dict('records')
-    flow_events = convert_to_flow_events(trace_df_p2p_comm_flow)
+    #flow_events = convert_to_flow_events(trace_df_p2p_comm_flow)
     metadata_events = generate_metadata_events([tuple(x) for x in new_df[['rank', 'pid']].drop_duplicates().to_records(index=False)])
-    trace_data["traceEvents"] = trace_events + flow_events + metadata_events
+    trace_data["traceEvents"] = trace_events + metadata_events
     
     with open(output_file, 'w') as f:
         json.dump(trace_data, f, indent=4)
-
-def _prod(shape):
-    return reduce(operator.mul, shape, 1)
-
-bytes_dict = {
-    'c10::Half': 2,
-    'c10::Float': 4,
-    'c10::Int': 1,
-    'c10::BFloat16': 2,
-    'long int': 8,
-    'float': 4,
-    'unsigned char': 1
-}
-
-def get_calculate_flops_function(op_name):
-    def calculate_attention_flops(input_dims):
-        q_shape = input_dims[0]
-        k_shape = input_dims[1]
-        v_shape = input_dims[2]
-        macs = _prod(q_shape) * k_shape[-2]
-        macs += _prod(q_shape[:-1]) * k_shape[-2] * v_shape[-1]
-        return 2 * macs
-    
-    def calculate_matmul_flops(input_dims):
-        return _prod(input_dims[0]) * input_dims[1][-1] * 2
-    
-    def calculate_rms_norm_flops(input_dims):
-        weight_shape = input_dims[2] 
-        has_affine = len(weight_shape) > 0
-
-        return _prod(input_dims[0]) * (5 if has_affine else 4)
-    
-    def calculate_noop_flops(*args):
-        return -1
-
-    if op_name == 'aten::matmul' or op_name == 'aten::mul':
-        return calculate_matmul_flops
-    elif op_name == 'aten::scaled_dot_product_attention':
-        return calculate_attention_flops
-    elif op_name == 'aten::rms_norm_forward':
-        return calculate_rms_norm_flops
-    else:
-        return calculate_noop_flops
-
-def get_calculate_comm_volumn_function(op_name):
-    TP_SIZE = 2
-    DP_SIZE = 2
-    PP_SIZE = 4
-    def get_num_of_bytes(type):
-        if type not in bytes_dict: 
-            print(f'type {type} not in bytes_dict, is set to 1B')
-        return bytes_dict.get(type, 1)
-
-    def calculate_all_gather_comm_volumn(input_dims, input_type):
-        n_rank = TP_SIZE
-        return _prod(input_dims[0]) * get_num_of_bytes(input_type[0]) * (n_rank - 1) 
-    
-    def calculate_reduce_scatter_comm_volumn(input_dims, input_type):
-        n_rank = TP_SIZE
-        return _prod(input_dims[0]) * get_num_of_bytes(input_type[0]) * (n_rank - 1) / n_rank
-    
-    def calculate_p2p_comm_volumn(input_dims, input_type):
-        return _prod(input_dims[0]) * get_num_of_bytes(input_type[0])
-    
-    def calculate_all_reduce_comm_volumn(input_dims, input_type):
-        n_rank = DP_SIZE
-        return _prod(input_dims[0]) * get_num_of_bytes(input_type[0]) * 2 * (n_rank - 1) / n_rank
-    
-    def calculate_broadcast_comm_volumn(input_dims, input_type):
-        n_rank = DP_SIZE
-        return _prod(input_dims[0]) * get_num_of_bytes(input_type[0]) * n_rank
-
-    def calculate_noop_comm_volumn(*args):
-        return -1
-
-    if op_name == 'mccl:_all_gather_base':
-        return calculate_all_gather_comm_volumn
-    elif op_name == 'mccl:_reduce_scatter_base':
-        return calculate_reduce_scatter_comm_volumn
-    elif op_name.startswith(('mccl:send', 'mccl:recv')):
-        return calculate_p2p_comm_volumn
-    elif op_name in ['mccl:broadcast']:
-        return calculate_broadcast_comm_volumn
-    elif op_name in ['mccl:all_reduce']:
-        return calculate_all_reduce_comm_volumn
-    else:
-        return calculate_noop_comm_volumn
-
-def calculate_flops_for_trace_df(trace_df):
-    trace_df['flops'] = trace_df.apply(lambda row: get_calculate_flops_function(row['s_name'])(row['input_dims']), axis=1)
-    trace_df['TFLOPS'] = trace_df.apply(lambda row: row['flops'] / row['kernel_span'] * 1e-6 if row['flops'] > 0 and row['kernel_span'] > 0 else -1, axis=1)
-    return trace_df
-
-def calculate_comm_volume_for_trace_df(trace_df):
-    trace_df['comm_volume'] = trace_df.apply(lambda row: get_calculate_comm_volumn_function(row['s_name'])(row['input_dims'], row['input_type']), axis=1)
-    trace_df['bandwidth'] = trace_df.apply(
-        lambda row: (
-            row['comm_volume'] / row.get('comm_time', row['kernel_span']) * 1e-3 
-            if row['s_name'].startswith(('send_forward', 'recv_forward')) and row.get('comm_time', row['kernel_span']) > 0
-            else (row['comm_volume'] / row['kernel_span'] * 1e-3 if row['comm_volume'] > 0 and row['dur'] > 0 else -1)
-        ), 
-        axis=1
-    )
-
-    return trace_df

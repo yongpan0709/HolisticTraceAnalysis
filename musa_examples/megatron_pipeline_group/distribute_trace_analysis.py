@@ -90,7 +90,7 @@ def gather_data(comm, send_data, use_p2p=True):
     
 class DistributedMegatronTraceAnalysis:
     def __init__(self, trace_dir, tp: int, ep: int, dp: int, pp: int, cp: int =1, pp_schedule: str = '1f1b', vpp_size: int = 2, order: str ="tp-cp-ep-dp-pp"):
-        self.trace_dir = trace_dir
+        self.trace_dir = trace_dir.rstrip('/')
         self.tensor_parallel_size = tp
         self.data_parallel_size = dp
         self.pipeline_parallel_size = pp
@@ -255,7 +255,6 @@ class DistributedMegatronTraceAnalysis:
             logger.debug(f'Processing pp group {pp_group_id}')
             analyzer_single_pp_group = self.process_single_pp_group(pp_group_id, folder)
             self.analysis_list.append(analyzer_single_pp_group)
-            break
         #self.gather_infos_from_all_ranks()
         #self.analyze_anomalies()
         #self.post_process()

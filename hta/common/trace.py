@@ -721,7 +721,7 @@ class Trace:
         self.min_ts = min(trace_df["ts"].min() for trace_df in self.traces.values())
         for rank, trace_df in self.traces.items():
             trace_df["ts"] = trace_df["ts"] - self.min_ts
-            #trace_df["end"] = trace_df["end"] - self.min_ts
+            trace_df["end"] = trace_df["end"] - self.min_ts
             self.traces[rank] = trace_df
 
     def _fix_mtia_memory_kernels(self, trace_df: pd.DataFrame) -> pd.DataFrame:

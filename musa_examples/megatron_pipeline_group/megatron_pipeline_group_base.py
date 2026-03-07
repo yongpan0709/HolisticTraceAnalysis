@@ -15,12 +15,10 @@ import tracemalloc
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
-
 import pandas as pd
 import re
 
 from hta.common.trace import Trace
-from hta.common.trace_df import save_trace_df_to_file
 from hta.common.trace_filter import create_regex_for_prefix_match
 from hta.configs.config import logger
 from hta.configs.default_values import DEFAULT_TRACE_DIR
@@ -246,8 +244,62 @@ class MegatronPipelineParallelGroupTraceBase(ABC):
         #if meta_data is None:
         #    meta_data = self.meta_data
         trace_df_all_ranks = self.combine_into_one_trace(traces)
-        save_trace_df_to_file(trace_df_all_ranks, save_path) # Todo: enhance flow event:, trace_df_p2p_flow_events)
+        MegatronPipelineParallelGroupTraceBase.save_trace_df_to_file(trace_df_all_ranks, save_path) # Todo: enhance flow event:, trace_df_p2p_flow_events)
     
+    @staticmethod
+    def save_trace_df_to_file(df: pd.DataFrame, output_file: str, trace_df_p2p_comm_flow: pd.DataFrame=None, meta_data: dict=None):
+        columns_to_keep = ['name', 'cat', 'pid', 'tid', 'ts', 'dur', 'rank']
+        columns_to_drop = ['s_name', 's_cat']
+        
+        new_df = df[columns_to_keep].copy()
+        new_df['ts'] = df['first_kernel_start']
+        new_df['dur'] = df['kernel_span']
+        new_df['name'] = df['s_name']
+        new_df['cat'] = df['s_cat']
+        new_df['ph'] = 'X'
+        # Todo: in interleaved PP, send_fwd_recv_fwd and send_bwd_recv_bwd execute asyn and in parallel with fwd_step or bwd_step
+        # so for displaying in perfetto, it muse set them with different tids.
+        #new_df.loc[new_df['name'].str.match(pat=r"^(send_forward_recv_forward|send_backward_recv_backward)$"), 'tid'] = 1
+        #new_df.loc[new_df['name'].str.match(pat=r"^mccl:recv$"), 'tid'] = 2
+        #new_df.loc[new_df['name'].str.match(pat=r"^mccl:send$"), 'tid'] = 3
+        #new_df['args'] = df.apply(lambda row: {col: row[col] for col in row.index if col not in columns_to_keep + columns_to_drop}, axis=1)
+
+        trace_data = meta_data.copy() if meta_data is not None else {}
+        trace_events = new_df.to_dict('records')
+        #flow_events = convert_to_flow_events(trace_df_p2p_comm_flow)
+        metadata_events = MegatronPipelineParallelGroupTraceBase.generate_metadata_events([tuple(x) for x in new_df[['rank', 'pid']].drop_duplicates().to_records(index=False)])
+        trace_data["traceEvents"] = trace_events + metadata_events
+        
+        with open(output_file, 'w') as f:
+            json.dump(trace_data, f, indent=4)
+        
+    @staticmethod
+    def generate_metadata_events(rank_pid_pairs):
+        metadata_events = []
+        rank_pid_pairs = sorted(rank_pid_pairs)
+        for i, (rank, pid) in enumerate(rank_pid_pairs):
+            metadata_events.append(
+                {
+                    'name': 'process_sort_index',
+                    'ph': 'M',
+                    'pid': pid,
+                    'args':{
+                        'sort_index': i
+                    }
+                }
+            )
+            metadata_events.append(
+                {
+                    'name': 'process_name',
+                    'ph': 'M',
+                    'pid': pid,
+                    'args':{
+                        'name': f'rank {rank}'
+                    }
+                }
+            )
+        return metadata_events
+
     # def set_rank_info(self):
     #     for rank in self.get_ranks():
     #         self.traces[rank]['rank'] = rank    
@@ -302,3 +354,75 @@ class MegatronPipelineParallelGroupTraceBase(ABC):
         pattern = r'^logical_and_across_model_parallel_group$'
         logical_and_across_model_parallel_group_time = sorted_trace_df[sorted_trace_df['s_name'].str.contains(pattern)]['kernel_span'].values[0]
         return logical_and_across_model_parallel_group_time/1000
+
+def convert_to_flow_events(trace_df_p2p_comm_flow: pd.DataFrame):
+    if trace_df_p2p_comm_flow is None: return []
+    
+    df_p2p_forward = trace_df_p2p_comm_flow[trace_df_p2p_comm_flow['p2p_forward'] == True]
+    df_p2p_backward = trace_df_p2p_comm_flow[trace_df_p2p_comm_flow['p2p_backward'] == True]
+
+    send_forward_pd = pd.DataFrame({
+        'cat': 'p2p_forward',
+        'name': 'p2p_forward',
+        'ph': 's',
+        'pid': df_p2p_forward['pid_on_prev'],
+        'tid': df_p2p_forward['tid_on_prev'],
+        'ts': np.maximum(df_p2p_forward['ts_on_prev'], df_p2p_forward['ts_on_next']),
+        'id': df_p2p_forward.index,
+        'args': [
+            {'micro_batch_id': micro_batch_id}
+            for micro_batch_id in df_p2p_forward['micro_batch_id_forward_on_prev']
+        ]
+    })
+    
+    send_backward_pd = pd.DataFrame({
+        'cat': 'p2p_backward',
+        'name': 'p2p_backward',
+        'ph': 's',
+        'pid': df_p2p_backward['pid_on_next'],
+        'tid': df_p2p_backward['tid_on_next'],
+        'ts': np.maximum(df_p2p_backward['ts_on_prev'], df_p2p_backward['ts_on_next']),
+        'id': df_p2p_backward.index,
+        'args': [
+            {'micro_batch_id': micro_batch_id}
+            for micro_batch_id in df_p2p_backward['micro_batch_id_backward_on_prev']
+        ]
+    })
+
+    recv_forward_pd = pd.DataFrame({
+        'cat': 'p2p_forward',
+        'name': 'p2p_forward',
+        'ph': 'f',
+        'pid': df_p2p_forward['pid_on_next'],
+        'tid': df_p2p_forward['tid_on_next'],
+        'ts': df_p2p_forward['ts_on_next'] + df_p2p_forward['dur_on_next'],
+        'id': df_p2p_forward.index,
+        'bp': 'e',
+        'args': [
+            {'micro_batch_id': micro_batch_id}
+            for micro_batch_id in df_p2p_forward['micro_batch_id_forward_on_prev']
+        ]
+    })
+
+    recv_backward_pd = pd.DataFrame({
+        'cat': 'p2p_backward',
+        'name': 'p2p_backward',
+        'ph': 'f',
+        'pid': df_p2p_backward['pid_on_prev'],
+        'tid': df_p2p_backward['tid_on_prev'],
+        'ts': df_p2p_backward['ts_on_prev'] + df_p2p_backward['dur_on_prev'],
+        'id': df_p2p_backward.index,
+        'bp': 'e',
+        'args': [
+            {'micro_batch_id': micro_batch_id}
+            for micro_batch_id in df_p2p_backward['micro_batch_id_backward_on_prev']
+        ]
+    })
+
+    total_dicts = [
+        item
+        for pd in [send_forward_pd, send_backward_pd, recv_forward_pd, recv_backward_pd]
+        for item in pd.to_dict('records')
+    ]
+
+    return total_dicts

@@ -21,7 +21,6 @@ import pandas as pd
 import re
 
 from hta.common.trace import Trace
-from hta.common.trace_df import save_trace_df_to_file
 from hta.common.trace_filter import create_regex_for_prefix_match
 from hta.configs.config import logger
 from hta.configs.default_values import DEFAULT_TRACE_DIR

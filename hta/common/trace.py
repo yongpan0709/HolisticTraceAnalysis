@@ -8,6 +8,7 @@ import gzip
 import json
 import multiprocessing as mp
 import os
+import re
 import sys
 import time
 import tracemalloc
@@ -15,13 +16,9 @@ import warnings
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
-
 import pandas as pd
-import re
-
-from hta.common.trace_df import save_trace_df_to_file
 from hta.common.trace_file import create_rank_to_trace_dict, get_trace_files
-from hta.common.trace_filter import CPUOperatorFilter, GPUKernelFilter, create_regex_for_prefix_match
+from hta.common.trace_filter import CPUOperatorFilter, GPUKernelFilter
 from hta.common.trace_parser import parse_trace_dataframe, parse_trace_dict
 from hta.common.trace_symbol_table import (
     decode_symbol_id_to_symbol_name,
@@ -31,9 +28,6 @@ from hta.configs.config import logger
 from hta.configs.default_values import DEFAULT_TRACE_DIR
 from hta.configs.parser_config import ParserConfig
 from hta.utils.utils import get_mp_pool_size, normalize_path
-from hta.common.trace_filter import NameFilter, GPUKernelFilter, CompositeFilter, TimeRangeFilter
-from hta.utils.parallel_state import get_next_pipeline_rank, is_first_stage, is_last_stage
-from hta.utils.utils import add_rank_to_filename, apply_function_for_parallel
 
 MetaData = Dict[str, Any]
 PHASE_COUNTER: str = "C"
@@ -265,8 +259,10 @@ def parse_trace_file(
     cfg = cfg or ParserConfig.get_default_cfg()
 
     meta, df, local_symbol_table = parse_trace_dataframe(trace_file_path, cfg)
+
     # add fwd bwd links between CPU ops
     add_fwd_bwd_links(df, local_symbol_table)
+
     df = transform_correlation_to_index(df, local_symbol_table)
 
     add_iteration(df, local_symbol_table)
@@ -276,7 +272,6 @@ def parse_trace_file(
     logger.warning(
         f"Overall parsing of {trace_file_path} in {(t_end - t_start):.2f} seconds; current PID:{os. getpid()}"
     )
-
     return meta, df, local_symbol_table
 
 
@@ -312,7 +307,6 @@ def add_fwd_bwd_links(df: pd.DataFrame, symbol_table: TraceSymbolTable) -> None:
     # The "key" column will be used for the merge.
     cpu_op_sym_id = symbol_table.get_sym_id_map().get("cpu_op", None)
     df_cpu = df.loc[df.cat.eq(cpu_op_sym_id)][["index", "key"]]
-
     # Merge the fwdbwd events with the cpu events.
     # We will be using the index of last cpu event when multiple cpu events start from the same ts.
     df_fwdbwd_start_events = (
@@ -351,6 +345,7 @@ def add_fwd_bwd_links(df: pd.DataFrame, symbol_table: TraceSymbolTable) -> None:
     df.drop(list(columns_to_drop), axis=1, inplace=True)
     t1 = time.perf_counter()
     logger.debug(f"Time taken to add fwd_bwd links: {t1 - t0 :.2f} seconds")
+
 
 class Trace:
     """
@@ -726,7 +721,7 @@ class Trace:
         self.min_ts = min(trace_df["ts"].min() for trace_df in self.traces.values())
         for rank, trace_df in self.traces.items():
             trace_df["ts"] = trace_df["ts"] - self.min_ts
-            trace_df["end"] = trace_df["end"] - self.min_ts
+            #trace_df["end"] = trace_df["end"] - self.min_ts
             self.traces[rank] = trace_df
 
     def _fix_mtia_memory_kernels(self, trace_df: pd.DataFrame) -> pd.DataFrame:
@@ -859,17 +854,24 @@ class Trace:
             logger.warning(
                 "ProfilerStep not found in the trace. The analysis result may not be accurate."
             )
-            include_last_profiler_step = True
+            logger.info(
+                "Skipping GPU kernel filtering since no ProfilerStep markers found. All trace events will be preserved."
+            )
         elif len(profiler_step_ids) == 1:
             logger.warning(
                 "There is only one iteration in the trace. The analysis result may not be accurate."
             )
-            include_last_profiler_step = True
-        for rank, trace_df in self.traces.items():
-            if device_type != "MTIA":
-                self.traces[rank] = filter_gpu_kernels_with_cpu_correlation(trace_df)
-            else:
-                self.traces[rank] = filter_mtia_kernels_for_one_rank(trace_df)
+            logger.info(
+                "Skipping GPU kernel filtering since only one ProfilerStep found. All trace events will be preserved."
+            )
+        else:
+            for rank, trace_df in self.traces.items():
+                if device_type != "MTIA":
+                    self.traces[rank] = filter_gpu_kernels_with_cpu_correlation(
+                        trace_df
+                    )
+                else:
+                    self.traces[rank] = filter_mtia_kernels_for_one_rank(trace_df)
 
     def decode_symbol_ids(self, use_shorten_name: bool = True) -> None:
         """Decode the name and cat column to show the original string names.

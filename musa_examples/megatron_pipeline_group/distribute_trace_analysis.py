@@ -89,16 +89,17 @@ def gather_data(comm, send_data, use_p2p=True):
     return recv_data, send_counts, recv_displs
     
 class DistributedMegatronTraceAnalysis:
-    def __init__(self, trace_dir, tp: int, ep: int, dp: int, pp: int, cp: int =1, pp_schedule: str = '1f1b', vpp_size: int = 2, order: str ="tp-cp-ep-dp-pp"):
+    def __init__(self, trace_dir, tp: int, ep: int, dp: int, pp: int, cp: int =1, micro_bs: int =0, pp_schedule: str = '1f1b', vpp_size: int = 2, order: str ="tp-cp-ep-dp-pp"):
         self.trace_dir = trace_dir.rstrip('/')
         self.tensor_parallel_size = tp
         self.data_parallel_size = dp
         self.pipeline_parallel_size = pp
         self.expert_model_parallel_size = ep
         self.context_parallel_size = cp
-        assert pp_schedule in ['1f1b', '1f1b-interleaved'], f'Invalid pp schedule: {pp_schedule}'
+        self.micro_bs = micro_bs
+        assert pp_schedule in ['1f1b', '1f1b-interleaved', '1f1b-interleaved-epoverlap'], f'Invalid pp schedule: {pp_schedule}'
         self.pp_schedule = pp_schedule
-        if pp_schedule == '1f1b-interleaved':
+        if pp_schedule in ['1f1b-interleaved', '1f1b-interleaved-epoverlap']:
             self.vpp_size = vpp_size
             assert self.vpp_size > 0, f'Invalid vpp size: {self.vpp_size}'
         else:
@@ -232,7 +233,7 @@ class DistributedMegatronTraceAnalysis:
                 analyzer = pickle.load(f)
             logger.info(f'Analyzer loaded from {cache_path}')
         else:
-            analyzer = MegatronPipelineParallelGroupTraceAnalysis(trace_dir=trace_dir, data_parallel_size=self.data_parallel_size, tensor_parallel_size=self.tensor_parallel_size, pipeline_parallel_size=self.pipeline_parallel_size, expert_model_parallel_size=self.expert_model_parallel_size, context_parallel_size=self.context_parallel_size, pp_schedule = self.pp_schedule, vpp_size = self.vpp_size)
+            analyzer = MegatronPipelineParallelGroupTraceAnalysis(trace_dir=trace_dir, data_parallel_size=self.data_parallel_size, tensor_parallel_size=self.tensor_parallel_size, pipeline_parallel_size=self.pipeline_parallel_size, expert_model_parallel_size=self.expert_model_parallel_size, context_parallel_size=self.context_parallel_size, pp_schedule = self.pp_schedule, vpp_size = self.vpp_size, micro_bs=self.micro_bs)
             with open(cache_path, 'wb') as f:
                 pickle.dump(analyzer, f)
             logger.info(f'Analyzer saved to {cache_path}')

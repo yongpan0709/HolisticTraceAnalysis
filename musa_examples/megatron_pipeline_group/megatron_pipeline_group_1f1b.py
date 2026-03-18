@@ -44,8 +44,9 @@ class MegatronPipelineParallel1F1BGroupTrace(MegatronPipelineParallelGroupTraceB
         ep = -1,
         cp: int =1, 
         order: str ="tp-cp-ep-dp-pp",
+        micro_bs: int =0,
         ) -> None:
-        super().__init__(trace_files, trace_dir, dp, tp, pp, ep, cp, order)
+        super().__init__(trace_files, trace_dir, dp, tp, pp, ep, cp, order, micro_bs)
 
     # Todo: func list
     @staticmethod
@@ -260,8 +261,5 @@ class MegatronPipelineParallel1F1BGroupTrace(MegatronPipelineParallelGroupTraceB
         compute_time_total = all_forward_steps_df['kernel_span'].sum()/1000 + all_backward_steps_df['kernel_span'].sum()/1000
         return forward_step_avg_time, backward_step_avg_time, compute_time_total, all_forward_steps_df['kernel_span'].std()/1000, all_backward_steps_df['kernel_span'].std()/1000
 
-    def get_num_microbatches(self, trace_df):
-        return int(len(trace_df[trace_df['s_name'].str.match(pat=r'^forward_step$')]))
-    
     def get_bubble_time_ratio_theoretical(self, num_microbatch):
         return (self.pipeline_parallel_size - 1) / (self.pipeline_parallel_size - 1 + num_microbatch)

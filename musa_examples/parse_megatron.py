@@ -12,9 +12,24 @@ def main():
     DP_SIZE = 2
     EP_SIZE = 8
     PP_SCHEDULE = '1f1b'
+    MIRCRO_BATCHSIZE = 32
+    trace_dir = '/Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/mccl-1f1b'
+    #dist_megatron_analysis = DistributedMegatronTraceAnalysis(trace_dir, TP_SIZE, EP_SIZE, DP_SIZE, PP_SIZE, pp_schedule=PP_SCHEDULE, micro_bs = MIRCRO_BATCHSIZE)
+    #dist_megatron_analysis.analyze()
+
     VPP_SIZE = 2
-    # trace_dir = '/Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/20260204-vpp2-etl'
-    trace_dir = '/Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/20260206-nooverlap-1f1b-etl'
+    MIRCRO_BATCHSIZE = 32
+    PP_SCHEDULE = '1f1b-interleaved'
+    trace_dir = '/Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/mooncake-vpp2'
+    #dist_megatron_analysis = DistributedMegatronTraceAnalysis(trace_dir, TP_SIZE, EP_SIZE, DP_SIZE, PP_SIZE, pp_schedule=PP_SCHEDULE, vpp_size=VPP_SIZE, micro_bs = MIRCRO_BATCHSIZE)
+    #dist_megatron_analysis.analyze()
+
+    PP_SIZE = 2
+    DP_SIZE = 1
+    EP_SIZE = 8
+    PP_SCHEDULE = '1f1b-interleaved-epoverlap'
+    MIRCRO_BATCHSIZE = 16
+    trace_dir = '/Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/ep-overlap-etl'
     # trace_dir = '/Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/20260206-1f1b-etl'
 
     # Llama3
@@ -22,7 +37,7 @@ def main():
     # PP_SIZE = 4
     # DP_SIZE = 1
     # trace_dir = '/Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/tracedata/llama3-20250814-tp2_pp4_numbs8/llama-iter8'
-    dist_megatron_analysis = DistributedMegatronTraceAnalysis(trace_dir, TP_SIZE, EP_SIZE, DP_SIZE, PP_SIZE, pp_schedule=PP_SCHEDULE, vpp_size=VPP_SIZE)
+    dist_megatron_analysis = DistributedMegatronTraceAnalysis(trace_dir, TP_SIZE, EP_SIZE, DP_SIZE, PP_SIZE, pp_schedule=PP_SCHEDULE, vpp_size=VPP_SIZE, micro_bs = MIRCRO_BATCHSIZE)
     dist_megatron_analysis.analyze()
 
 if __name__ == '__main__':

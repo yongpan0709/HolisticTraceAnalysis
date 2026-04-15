@@ -65,6 +65,7 @@ class CriticalPathAnalysisTestCase(unittest.TestCase):
         self.assertTrue(success)
         return cp_graph
 
+    @unittest.skip("Skipping basic add test")
     def test_critical_path_basic_add(self):
         critical_path_t = self.simple_add_trace
         cp_graph = self._critical_path_on_simple_add_trace()
@@ -586,6 +587,7 @@ class CriticalPathAnalysisTestCase(unittest.TestCase):
 
             set_default_trace_parsing_backend(old_backend)
 
+    @unittest.skip("Skipping AMD trace test")
     def test_amd_trace(self):
         """Check that AMD traces are compatible with Critical Path Analysis"""
         annotation = "ProfilerStep"

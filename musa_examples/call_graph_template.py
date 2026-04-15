@@ -179,6 +179,50 @@ pretrain_kimi.py\(\d+\): <module>
         megatron/core/pipeline_parallel/p2p_communication.py\(\d+\): recv_forward
         megatron/core/pipeline_parallel/p2p_communication.py\(\d+\): recv_backward
 """
+
+output_template_to_file_kimi_epoverlap = r"""
+pretrain_kimi.py\(\d+\): <module>
+    musa_patch/training.py\(\d+\): train_step
+        megatron/core/pipeline_parallel/combined_1f1b.py\(\d+\): combined_forward_backward_step
+            megatron/core/models/common/model_chunk_schedule_plan.py\(\d+\): run
+                megatron/core/models/gpt/fine_grained_callables.py\(\d+\): submodule_attn_forward
+                    megatron/core/transformer/transformer_layer.py\(\d+\): _forward_attention
+                        megatron/core/tensor_parallel/random.py\(\d+\): checkpoint @dup@
+                            nn.Module: RMSNorm_0 @shape@
+                        nn.Module: MLASelfAttention_\d+
+                        megatron/core/fusions/fused_bias_dropout.py\(\d+\): _bias_dropout_add @dup@
+                megatron/core/models/gpt/fine_grained_callables.py\(\d+\): submodule_post_attn_forward
+                    megatron/core/tensor_parallel/random.py\(\d+\): checkpoint @dup@
+                        nn.Module: RMSNorm_1 @shape@
+                    megatron/core/transformer/moe/moe_layer.py\(\d+\): router_and_preprocess
+                        nn.Module: TopKRouter_0
+                        megatron/core/transformer/moe/token_dispatcher.py\(\d+\): dispatch_preprocess
+                megatron/core/models/gpt/fine_grained_callables.py\(\d+\): submodule_dispatch_forward
+                    FusedDispatch
+                megatron/core/models/gpt/fine_grained_callables.py\(\d+\): submodule_moe_forward
+                    megatron/core/transformer/moe/moe_layer.py\(\d+\): experts_compute
+                        nn.Module: SharedExpertMLP_0
+                        megatron/core/transformer/moe/token_dispatcher.py\(\d+\): dispatch_postprocess
+                        nn.Module: TEGroupedMLP_0
+                            nn.Module: TEColumnParallelGroupedLinear_0
+                                transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@ @shape@
+                            megatron/core/tensor_parallel/random.py\(\d+\): checkpoint @dup@
+                            nn.Module: TERowParallelGroupedLinear_0
+                                transformer_engine/pytorch/cpp_extensions/gemm.py\(\d+\): general_grouped_gemm @dup@ @shape@
+                        megatron/core/transformer/moe/token_dispatcher.py\(\d+\): combine_preprocess
+                        transformer_engine/pytorch/cpu_offload.py\(\d+\): wait_offload
+                megatron/core/models/gpt/fine_grained_callables.py\(\d+\): submodule_combine_forward
+                    megatron/core/transformer/moe/moe_layer.py\(\d+\): combine
+                    megatron/core/fusions/fused_bias_dropout.py\(\d+\): _bias_dropout_add @dup@
+            megatron/core/pipeline_parallel/schedules.py\(\d+\): forward_step_calc_loss
+        megatron/core/pipeline_parallel/p2p_communication.py\(\d+\): send_backward_recv_forward
+        megatron/core/pipeline_parallel/p2p_communication.py\(\d+\): send_forward_recv_backward
+        megatron/core/pipeline_parallel/p2p_communication.py\(\d+\): send_forward
+        megatron/core/pipeline_parallel/p2p_communication.py\(\d+\): send_backward
+        megatron/core/pipeline_parallel/p2p_communication.py\(\d+\): recv_forward
+        megatron/core/pipeline_parallel/p2p_communication.py\(\d+\): recv_backward
+"""
+
 # Function to count leading spaces or tabs
 def count_leading_whitespace(line):
     count = 0

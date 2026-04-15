@@ -7,5 +7,5 @@ install:
 	pip install -e .
 
 ## Run unit tests
-test: install
+test: 
 	python3 -m unittest -v tests/*.py

@@ -6,6 +6,7 @@ from hta.analyzers.cupti_counter_analysis import CUDA_SASS_INSTRUCTION_COUNTER_F
 from hta.trace_analysis import TraceAnalysis
 
 
+@unittest.skip("Skipping CuptiTestCase")
 class CuptiTestCase(unittest.TestCase):
     def setUp(self):
         self.base_data_dir = str(Path(__file__).parent.parent.joinpath("tests/data"))

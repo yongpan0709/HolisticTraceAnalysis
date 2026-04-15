@@ -35,6 +35,12 @@ FILTER_OUT_FUNCS = [
 ]
 COMBINED_PATTERN = '|'.join(FILTER_OUT_FUNCS)
 
+MOONCAKE_P2P_FUNCS = [
+    'mooncake_p2p_recv_from',
+    'mooncake_p2p_send_to',
+]
+MOONCAKE_P2P_PATTERN = '|'.join(MOONCAKE_P2P_FUNCS)
+
 FILTER_OUT_CAT_FUNCS = [
     "user_annotation",
     "gpu_user_annotation",
@@ -50,8 +56,14 @@ def filter_out_funcs(file_path, redirect_new_trace_path):
             if 'traceEvents' not in dup_data:
                 dup_data['traceEvents'] = []
             for item in value:             
-                if 'name' in item and re.match(COMBINED_PATTERN, item["name"]):
-                    continue
+                if 'name' in item:
+                    if re.match(COMBINED_PATTERN, item["name"]):
+                        continue
+                    elif re.match(MOONCAKE_P2P_PATTERN, item["name"]):
+                        item['cat'] = 'user_annotation'
+                        dup_data['traceEvents'].append(deepcopy(item))
+                    else:
+                        dup_data['traceEvents'].append(deepcopy(item))
                 else:
                     dup_data['traceEvents'].append(deepcopy(item))
         else:
@@ -69,7 +81,7 @@ def create_directory_if_not_exists(path):
 if __name__ == "__main__":
     # 示例用法
     #ETL
-    #mpirun -allow-run-as-root -np 2 --bind-to none --hostfile ./hostfile --map-by ppr:2:node --wdir /Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/musa_examples python trace_etl.py --tp 1 --pp 4 --dp 2 --ep 8 --trace_dir /Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/20260206-overlap-1f1b
+    #mpirun -allow-run-as-root -np 2 --bind-to none --hostfile ./hostfile --map-by ppr:2:node --wdir /Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/musa_examples python trace_etl.py --tp 1 --pp 4 --dp 2 --ep 8 --trace_dir /Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/mooncake_ep_overlap_delay_wgrad_trace_p2p/iteration_64
     parser = argparse.ArgumentParser(
         description="Generate version_info.mk file which will include ddk, musa_toolkit, mudnn, mccl download url.",
         usage=f"mpirun -allow-run-as-root -np 2 --bind-to none --hostfile ./hostfile --map-by ppr:2:node --wdir /Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/musa_examples python trace_etl.py --trace_dir <trace directory> --tp <tp size> --pp <pp size> --dp <dp size> --ep <ep size>")

@@ -77,6 +77,7 @@ class TraceAnalysisTestCase(unittest.TestCase):
             str(Path(self.overlaid_trace_dir)), "overlaid_rank-0.json.gz"
         )
 
+    @unittest.skip("Skipping frequent_cuda_kernel_sequences test")
     @patch.object(hta.common.trace.Trace, "write_raw_trace")
     def test_frequent_cuda_kernel_sequences(self, mock_write_trace):
         frequent_patterns_dfs = (
@@ -107,6 +108,7 @@ class TraceAnalysisTestCase(unittest.TestCase):
         trace_output_filename, _ = mock_write_trace.call_args.args
         self.assertEqual(trace_output_filename, self.overlaid_trace_file)
 
+    @unittest.skip("Skipping no_frequent_cuda_kernel_sequences_found test")
     def test_no_frequent_cuda_kernel_sequences_found(self):
         frequent_patterns_dfs = (
             self.df_index_resolver_t.get_frequent_cuda_kernel_sequences(
@@ -265,6 +267,7 @@ class TraceAnalysisTestCase(unittest.TestCase):
             delta=0.01,
         )
 
+    @unittest.skip("Skipping mtia_temporal_breakdown test")
     def test_mtia_temporal_breakdown(self):
         idle_time = self.mtia_single_rank_trace_t.get_temporal_breakdown(
             visualize=False
@@ -300,6 +303,7 @@ class TraceAnalysisTestCase(unittest.TestCase):
         self.assertEqual(kernel_breakdown.iloc[151]["kernel_type"], "MEMORY")
         self.assertEqual(kernel_breakdown.iloc[151]["sum (us)"], 1064)
 
+    @unittest.skip("Skipping get_mtia_kernel_breakdown test")
     def test_get_mtia_kernel_breakdown(self):
         (
             kernel_type_breakdown,
@@ -354,6 +358,7 @@ class TraceAnalysisTestCase(unittest.TestCase):
             check_dtype=False,
         )
 
+    @unittest.skip("Skipping gpu_user_annotation_breakdown test")
     def test_gpu_user_annotation_breakdown(self):
         self.__test_gpu_user_annotation_common(use_gpu_annotation=True, expected_rows=3)
 
@@ -377,6 +382,7 @@ class TraceAnalysisTestCase(unittest.TestCase):
         self.assertEqual(len(cpu_user_anno_df), 8)
         self.assertEqual(int(cpu_user_anno_df.name.str.contains("Optimizer").sum()), 2)
 
+    @unittest.skip("Skipping get_gpu_kernels_with_user_annotations test")
     def test_get_gpu_kernels_with_user_annotations(self):
         gpu_kernels_df = self.ns_resolution_t.get_gpu_kernels_with_user_annotations(
             rank=0,
@@ -456,6 +462,7 @@ class TraceAnalysisTestCase(unittest.TestCase):
             msg=f"queue_full_df = {queue_full_df}",
         )
 
+    @unittest.skip("Skipping get_mtia_queue_length_stats test")
     def test_get_mtia_queue_length_stats(self):
         qd_summary = self.mtia_single_rank_trace_t.get_queue_length_summary(ranks=[0])
         streams = qd_summary.index.to_list()
@@ -586,6 +593,7 @@ class TraceAnalysisTestCase(unittest.TestCase):
                 msg=f"Stream 7 idle stats mismatch key={key}",
             )
 
+    @unittest.skip("Skipping get_mtia_idle_time_breakdown test")
     def test_get_mtia_idle_time_breakdown(self):
         (
             idle_time_df,

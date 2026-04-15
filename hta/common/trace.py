@@ -13,7 +13,7 @@ import sys
 import time
 import tracemalloc
 import warnings
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, cast, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -190,6 +190,7 @@ def add_iteration(df: pd.DataFrame, symbol_table: TraceSymbolTable) -> pd.DataFr
         """
         s = s_tab[profiler_step_name_id]
         m = re.match(r"ProfilerStep\s*#\s*(\d+)", s)
+        assert m is not None, f"Failed to parse profiler step from: {s}"
         return int(m.group(1))
 
     # Extract the profiler steps
@@ -259,6 +260,13 @@ def parse_trace_file(
     cfg = cfg or ParserConfig.get_default_cfg()
 
     meta, df, local_symbol_table = parse_trace_dataframe(trace_file_path, cfg)
+
+    if df.empty:
+        logger.warning(
+            f"No analyzable events in {trace_file_path}. "
+            f"The trace may contain only metadata events."
+        )
+        return meta, df, local_symbol_table
 
     # add fwd bwd links between CPU ops
     add_fwd_bwd_links(df, local_symbol_table)
@@ -438,6 +446,8 @@ class Trace:
         )
         self.align_and_filter_trace(include_last_profiler_step)
         for rank, df in self.traces.items():
+            if df.empty:
+                continue
             df = self.traces[rank].set_index("index", drop=False)
             df.index.names = [None]
             self.traces[rank] = df
@@ -457,6 +467,11 @@ class Trace:
                 self.traces[rank],
                 local_symbol_table,
             ) = parse_trace_file(trace_filepath, self.parser_config)
+            if self.traces[rank].empty:
+                logger.warning(f"Trace for rank {rank} has no analyzable events.")
+                del self.traces[rank]
+                del self.meta_data[rank]
+                return
             # update the global symbol table
             self.symbol_table.add_symbols(local_symbol_table.get_sym_table())
             # fix the encoding of the data frame
@@ -527,12 +542,21 @@ class Trace:
 
         # Now we update the IDs in the Dataframe using the global symbols table.
         global_map = self.symbol_table.get_sym_id_map()
+        empty_ranks = []
         for rank in ranks:
+            if self.traces[rank].empty:
+                logger.warning(f"Trace for rank {rank} has no analyzable events.")
+                empty_ranks.append(rank)
+                continue
             local_table = local_symbol_tables[rank].get_sym_table()
             for col in ["cat", "name"]:
                 self.traces[rank][col] = self.traces[rank][col].apply(
-                    lambda idx: global_map[local_table[idx]]
+                    lambda idx, _lt=local_table: global_map[_lt[idx]]
                 )
+        for rank in empty_ranks:
+            del self.traces[rank]
+            if rank in self.meta_data:
+                del self.meta_data[rank]
 
         t1 = time.perf_counter()
         logger.warning(
@@ -582,6 +606,8 @@ class Trace:
         """
         Align the starting time across multiple ranks and filter events that belong to incomplete iterations.
         """
+        if not self.traces:
+            return
         self._align_all_ranks()
         self._filter_irrelevant_gpu_kernels(include_last_profiler_step)
 
@@ -718,8 +744,11 @@ class Trace:
         """
         Align dataframes for all ranks such that the earliest event starts at time 0.
         """
-        self.min_ts = min(trace_df["ts"].min() for trace_df in self.traces.values())
-        for rank, trace_df in self.traces.items():
+        non_empty = {r: df for r, df in self.traces.items() if not df.empty}
+        if not non_empty:
+            return
+        self.min_ts = min(df["ts"].min() for df in non_empty.values())
+        for rank, trace_df in non_empty.items():
             trace_df["ts"] = trace_df["ts"] - self.min_ts
             trace_df["end"] = trace_df["end"] - self.min_ts
             self.traces[rank] = trace_df
@@ -821,8 +850,11 @@ class Trace:
             filtered_gpu_kernels = gpu_kernels.merge(
                 cpu_kernels["correlation"], on="correlation", how="inner"
             )
-            return pd.concat(
-                [filtered_gpu_kernels, cpu_kernels], axis=0, ignore_index=True
+            return cast(
+                pd.DataFrame,
+                pd.concat(
+                    [filtered_gpu_kernels, cpu_kernels], axis=0, ignore_index=True
+                ),
             )
 
         def filter_mtia_kernels_for_one_rank(trace_df: pd.DataFrame) -> pd.DataFrame:
@@ -961,7 +993,7 @@ class Trace:
             "name": name,
         }
         if args is not None:
-            res["args"] = args
+            res["args"] = args  # type: ignore[assignment]
         if not is_start:
             res["bp"] = "e"
         return res

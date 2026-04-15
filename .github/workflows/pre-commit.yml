@@ -5,16 +5,15 @@ on:
   push:
     branches: [main]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        # make sure python versions are consistent with those used in .circleci/config.yml
-        python-version: ['3.8.12', '3.9.13', '3.10.4']
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/setup-python@v3
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
       with:
-        python-version: ${{ matrix.python-version }}
-    - uses: pre-commit/action@v3.0.0
+        python-version: "3.12"
+    - uses: pre-commit/action@v3.0.1

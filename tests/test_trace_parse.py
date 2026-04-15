@@ -13,6 +13,7 @@ import pandas as pd
 from hta.common.trace import parse_trace_dict, Trace
 from hta.common.trace_parser import (
     _auto_detect_parser_backend,
+    _compress_df,
     _open_trace_file,
     get_default_trace_parsing_backend,
     infer_gpu_type,
@@ -23,7 +24,7 @@ from hta.common.trace_parser import (
 )
 from hta.common.trace_symbol_table import TraceSymbolTable
 from hta.configs.parser_config import AVAILABLE_ARGS, ParserConfig
-from hta.utils.test_utils import data_provider
+from hta.utils.test_utils import data_provider, get_test_data_dir
 
 JSON = Dict[str, Any]
 EXPECTED_META_VISION_TRANFORMER: JSON = {
@@ -72,7 +73,6 @@ GROUND_TRUTH_CACHE: Dict[str, pd.DataFrame] = {}
 
 
 def prepare_ground_truth_df(trace_dir, rank_0_file) -> pd.DataFrame:
-    global GROUND_TRUTH_CACHE
     filep = os.path.join(trace_dir, rank_0_file)
     if str(filep) in GROUND_TRUTH_CACHE:
         df = GROUND_TRUTH_CACHE[str(filep)].copy()
@@ -100,15 +100,9 @@ class TraceParseTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         super(TraceParseTestCase, cls).setUpClass()
-        vision_transformer_trace_dir: str = add_test_data_path_prefix_if_exists(
-            "tests/data/vision_transformer"
-        )
-        inference_trace_dir: str = add_test_data_path_prefix_if_exists(
-            "tests/data/inference_single_rank"
-        )
-        triton_trace_dir: str = add_test_data_path_prefix_if_exists(
-            "tests/data/triton_example"
-        )
+        vision_transformer_trace_dir: str = get_test_data_dir("vision_transformer")
+        inference_trace_dir: str = get_test_data_dir("inference_single_rank")
+        triton_trace_dir: str = get_test_data_dir("triton_example")
 
         vision_transformer_rank_0_file: str = "rank-0.json.gz"
         inference_rank_0_file: str = "inference_rank_0.json.gz"
@@ -165,10 +159,12 @@ class TraceParseTestCase(unittest.TestCase):
             sym_id_map = t.symbol_table.get_sym_id_map()
             sym_table = t.symbol_table.get_sym_table()
             rank_0_df_name_id = t.traces[0]["name"]
-            rank_0_df_name = t.traces[0]["name"].apply(lambda x: sym_table[x])
+            rank_0_df_name = t.traces[0]["name"].apply(lambda x, st=sym_table: st[x])
 
             ground_truth_name = raw_df["name"]
-            ground_truth_name_id = raw_df["name"].apply(lambda x: sym_id_map[x])
+            ground_truth_name_id = raw_df["name"].apply(
+                lambda x, sim=sym_id_map: sim[x]
+            )
 
             self.assertSetEqual(
                 set(rank_0_df_name_id.to_list()), set(ground_truth_name_id.to_list())
@@ -288,14 +284,11 @@ class TraceParseIjsonOthersTestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.inference_trace_dir: str = add_test_data_path_prefix_if_exists(
-            "tests/data/critical_path/alexnet"
-        )
-        cls.vision_transformer_trace_dir: str = add_test_data_path_prefix_if_exists(
-            "tests/data/vision_transformer"
-        )
-        cls.cpu_only_trace_path: str = add_test_data_path_prefix_if_exists(
-            "tests/data/cpu_only/rank-34.Jul_15_10_52_41.1074.pt.trace.json.gz"
+        cls.inference_trace_dir: str = get_test_data_dir("critical_path", "alexnet")
+        cls.vision_transformer_trace_dir: str = get_test_data_dir("vision_transformer")
+        cls.cpu_only_trace_path: str = os.path.join(
+            get_test_data_dir("cpu_only"),
+            "rank-34.Jul_15_10_52_41.1074.pt.trace.json.gz",
         )
 
     def test_ijson_parser(self):
@@ -361,20 +354,10 @@ class TraceParseIjsonOthersTestCase(unittest.TestCase):
     #     self.assertEqual(_auto_detect_parser_backend(), "ijson_batch_and_compress")
 
 
-def add_test_data_path_prefix_if_exists(test_path):
-    """Add TEST_DATA_PREFIX_PATH to the test path if it exists"""
-    needs_prefix = os.environ.get("TEST_DATA_PREFIX_PATH", "")
-    if needs_prefix:
-        return needs_prefix + "/" + test_path
-    return test_path
-
-
 class TestMtiaAlignAndFilter(unittest.TestCase):
     def test_align_and_filter_mtia(self) -> None:
         # Trace parser for MTIA
-        mtia_trace_dir: str = add_test_data_path_prefix_if_exists(
-            "tests/data/mtia_trace_single_rank"
-        )
+        mtia_trace_dir: str = get_test_data_dir("mtia_trace_single_rank")
         t: Trace = Trace(trace_dir=mtia_trace_dir)
         t.parse_traces()
         t.align_and_filter_trace()
@@ -418,9 +401,7 @@ class TestMtiaAlignAndFilter(unittest.TestCase):
         all trace events should be preserved.
         """
         # Setup: Use real MTIA inference trace file without ProfilerStep markers
-        mtia_inference_dir: str = add_test_data_path_prefix_if_exists(
-            "tests/data/mtia_inference_trace"
-        )
+        mtia_inference_dir: str = get_test_data_dir("mtia_inference_trace")
         inference_trace_file = os.path.join(
             mtia_inference_dir, "mtia_inference_rank_0.json.gz"
         )
@@ -467,17 +448,13 @@ class TraceParseConfigTestCase(unittest.TestCase):
         # ParserConfig.set_default_cfg(custom_cfg)
 
         # Trace parser test file for nccl fields
-        self.resnet_nccl_trace: str = add_test_data_path_prefix_if_exists(
-            "tests/data/nccl_parser_config"
-        )
+        self.resnet_nccl_trace: str = get_test_data_dir("nccl_parser_config")
         self.resnet_nccl_t: Trace = Trace(
             trace_dir=self.resnet_nccl_trace, parser_config=self.custom_cfg
         )
 
         # Trace parser test file for Triton fields
-        triton_trace: str = add_test_data_path_prefix_if_exists(
-            "tests/data/triton_example"
-        )
+        triton_trace: str = get_test_data_dir("triton_example")
         self.triton_t: Trace = Trace(
             trace_dir=triton_trace, parser_config=self.custom_cfg
         )
@@ -668,6 +645,89 @@ class TraceParseConfigTestCase(unittest.TestCase):
 
         # Validate results
         pd.testing.assert_frame_equal(fixed_df, expected_df)
+
+
+class TestMetadataOnlyTrace(unittest.TestCase):
+    """Test handling of traces with only metadata events (no dur/cat columns)."""
+
+    def test_compress_df_missing_dur_and_cat(self):
+        """_compress_df should return empty DataFrame when dur and cat columns are missing."""
+        # Simulate a trace with only metadata events (phase 'M')
+        metadata_events = [
+            {
+                "ph": "M",
+                "name": "process_name",
+                "pid": 1,
+                "tid": 1,
+                "ts": 0,
+                "args": {"name": "GPU 0"},
+            },
+            {
+                "ph": "M",
+                "name": "thread_name",
+                "pid": 1,
+                "tid": 2,
+                "ts": 0,
+                "args": {"name": "stream 7"},
+            },
+        ]
+        df = pd.DataFrame(metadata_events)
+        result_df, result_sym = _compress_df(df)
+        self.assertTrue(result_df.empty)
+        self.assertIsInstance(result_sym, TraceSymbolTable)
+
+    def test_compress_df_with_valid_events(self):
+        """_compress_df should work normally when dur and cat columns exist."""
+        events = [
+            {
+                "ph": "X",
+                "name": "kernel_a",
+                "cat": "Kernel",
+                "pid": 1,
+                "tid": 1,
+                "ts": 100,
+                "dur": 50,
+            },
+            {
+                "ph": "X",
+                "name": "kernel_b",
+                "cat": "Kernel",
+                "pid": 1,
+                "tid": 1,
+                "ts": 200,
+                "dur": 30,
+            },
+        ]
+        df = pd.DataFrame(events)
+        result_df, result_sym = _compress_df(df)
+        self.assertFalse(result_df.empty)
+        self.assertEqual(len(result_df), 2)
+
+    def test_compress_df_mixed_events_filters_nulls(self):
+        """_compress_df should drop rows where dur/cat are null in mixed traces."""
+        events = [
+            {
+                "ph": "X",
+                "name": "kernel_a",
+                "cat": "Kernel",
+                "pid": 1,
+                "tid": 1,
+                "ts": 100,
+                "dur": 50,
+            },
+            {
+                "ph": "M",
+                "name": "process_name",
+                "pid": 1,
+                "tid": 1,
+                "ts": 0,
+                "cat": None,
+                "dur": None,
+            },
+        ]
+        df = pd.DataFrame(events)
+        result_df, result_sym = _compress_df(df)
+        self.assertEqual(len(result_df), 1)
 
 
 if __name__ == "__main__":  # pragma: no cover

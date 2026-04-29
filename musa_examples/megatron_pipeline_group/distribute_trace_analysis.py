@@ -381,11 +381,23 @@ class DistributedMegatronTraceAnalysis:
         
         return pipeline_trace
 
-    def analyze(self):
-        """Execute analysis on assigned tasks."""
+    def analyze(self, pp_group_id_range: Optional[Tuple[int, int]] = None):
+        """Execute analysis on assigned tasks.
+
+        Args:
+            pp_group_id_range: Optional inclusive pp_group_id range, e.g. (0, 3).
+        """
         self.analysis_list = []
-        
-        for pp_group_id, folder in self.assigned_tasks:
+        assigned_tasks = self.assigned_tasks
+        if pp_group_id_range is not None:
+            start_pp_group_id, end_pp_group_id = pp_group_id_range
+            assigned_tasks = [
+                (pp_group_id, folder)
+                for pp_group_id, folder in assigned_tasks
+                if start_pp_group_id <= pp_group_id <= end_pp_group_id
+            ]
+
+        for pp_group_id, folder in assigned_tasks:
             logger.debug(f'Processing pp group {pp_group_id}')
             result = self.process_single_pp_group(pp_group_id, folder)
             self.analysis_list.append(result)

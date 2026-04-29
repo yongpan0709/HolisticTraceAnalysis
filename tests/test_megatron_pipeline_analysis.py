@@ -133,7 +133,7 @@ class TestMegatronPipeline(unittest.TestCase):
             analysis_kwargs['vpp_size'] = dataset_info['vpp_size']
 
         dist_megatron_analysis = DistributedMegatronTraceAnalysis(**analysis_kwargs)
-        dist_megatron_analysis.analyze()
+        dist_megatron_analysis.analyze(pp_group_id_range=(0, 0))
 
         generated_csv_path = os.path.join(
             'workspace',

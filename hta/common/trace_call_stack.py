@@ -412,6 +412,7 @@ class CallStackGraph:
                 value_name="time",
             )
             .replace({"ts": -1, "end": 1})
+            .infer_objects(copy=False)
             .sort_values("time")
         ).to_numpy()
 

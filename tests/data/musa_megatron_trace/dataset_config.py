@@ -177,6 +177,14 @@ def prepare_model_main_stack_dataset(
     trace_path = os.path.join(dataset_dir, MODEL_MAIN_STACK_TEST_DATASET["trace_filename"])
     expected_txt_path = os.path.join(dataset_dir, MODEL_MAIN_STACK_TEST_DATASET["expected_txt_name"])
 
+    if not force_download and os.path.exists(trace_path) and os.path.exists(expected_txt_path):
+        print(f"Model main stack dataset already exists at {dataset_dir}, skipping download")
+        return {
+            "trace_dir": dataset_dir,
+            "trace_path": trace_path,
+            "expected_txt_path": expected_txt_path,
+        }
+
     trace_result = download_file(
         get_model_main_stack_trace_url(),
         trace_path,

@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'musa_examples'
 from megatron_pipeline_group.distribute_trace_analysis import DistributedMegatronTraceAnalysis
 
 from hta.utils.test_utils import get_test_data_dir
-from tests.data.musa_megatron_pipeline_trace.dataset_config import (
+from tests.data.musa_megatron_trace.dataset_config import (
     check_dataset_exists,
     check_expected_csv_exists,
     download_and_extract_dataset,
@@ -91,7 +91,7 @@ class TestMegatronPipeline(unittest.TestCase):
         cls.base_data_dir = get_test_data_dir()
         cls.megatron_trace_dir = os.path.join(
             cls.base_data_dir,
-            'musa_megatron_pipeline_trace',
+            'musa_megatron_trace',
         )
         os.makedirs(cls.megatron_trace_dir, exist_ok=True)
 

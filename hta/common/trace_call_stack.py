@@ -404,17 +404,14 @@ class CallStackGraph:
         # Convert the time series into a ndarray in which each row has four attributes:
         #   index, dur, kind, time
         #   type == -1 means event start; type == 1 means event end
-        events: np.ndarray = (
-            _df.melt(
-                id_vars=["index", "dur"],
-                value_vars=["ts", "end"],
-                var_name="kind",
-                value_name="time",
-            )
-            .replace({"ts": -1, "end": 1})
-            .infer_objects(copy=False)
-            .sort_values("time")
-        ).to_numpy()
+        events_df = _df.melt(
+            id_vars=["index", "dur"],
+            value_vars=["ts", "end"],
+            var_name="kind",
+            value_name="time",
+        )
+        events_df["kind"] = events_df["kind"].map({"ts": -1, "end": 1}).astype("int8")
+        events = events_df.sort_values("time").to_numpy()
 
         t1 = perf_counter()
         sort_events(events)

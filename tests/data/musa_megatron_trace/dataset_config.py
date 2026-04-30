@@ -38,6 +38,15 @@ EXPECTED_CSV_NAMES: Dict[str, str] = {
 }
 
 
+MODEL_MAIN_STACK_TEST_DATASET: Dict[str, object] = {
+    "name": "model_main_stack",
+    "trace_filename": "epoverlap-drop-no-related-stream-rank16.json",
+    "expected_txt_name": "kimi_epoverlap-16-expected-main-stack.txt",
+    "rank": 16,
+    "template": "kimi_epoverlap",
+}
+
+
 # Dataset metadata configuration
 # Each entry contains:
 # - schedule: PP_SCHEDULE type this dataset is used for
@@ -128,6 +137,67 @@ def get_expected_csv_url(dataset_name: str) -> str:
     return f"{BASE_URL}/{get_expected_csv_name(dataset_name)}"
 
 
+def get_model_main_stack_trace_url() -> str:
+    """Get the model main stack trace URL."""
+    return f"{BASE_URL}/{MODEL_MAIN_STACK_TEST_DATASET['trace_filename']}"
+
+
+def get_model_main_stack_expected_txt_url() -> str:
+    """Get the model main stack expected text URL."""
+    return f"{BASE_URL}/{MODEL_MAIN_STACK_TEST_DATASET['expected_txt_name']}"
+
+
+def download_file(url: str, target_path: str, force_download: bool = False) -> Optional[str]:
+    """Download a file if it does not exist."""
+    if not force_download and os.path.exists(target_path):
+        print(f"File already exists at {target_path}, skipping download")
+        return target_path
+
+    target_dir = os.path.dirname(target_path)
+    if target_dir and not os.path.exists(target_dir):
+        os.makedirs(target_dir)
+
+    print(f"Downloading {url} to {target_path}...")
+    try:
+        urllib.request.urlretrieve(url, target_path)
+        return target_path
+    except Exception as e:
+        print(f"Failed to download {url}: {e}")
+        if os.path.exists(target_path):
+            os.remove(target_path)
+        return None
+
+
+def prepare_model_main_stack_dataset(
+    target_dir: str,
+    force_download: bool = False,
+) -> Optional[Dict[str, str]]:
+    """Download trace and expected text for model main stack tests."""
+    dataset_dir = os.path.join(target_dir, MODEL_MAIN_STACK_TEST_DATASET["name"])
+    trace_path = os.path.join(dataset_dir, MODEL_MAIN_STACK_TEST_DATASET["trace_filename"])
+    expected_txt_path = os.path.join(dataset_dir, MODEL_MAIN_STACK_TEST_DATASET["expected_txt_name"])
+
+    trace_result = download_file(
+        get_model_main_stack_trace_url(),
+        trace_path,
+        force_download=force_download,
+    )
+    expected_result = download_file(
+        get_model_main_stack_expected_txt_url(),
+        expected_txt_path,
+        force_download=force_download,
+    )
+
+    if trace_result is None or expected_result is None:
+        return None
+
+    return {
+        "trace_dir": dataset_dir,
+        "trace_path": trace_path,
+        "expected_txt_path": expected_txt_path,
+    }
+
+
 def check_dataset_exists(target_dir: str) -> bool:
     """
     Check if an extracted dataset directory exists with trace json files.
@@ -140,7 +210,7 @@ def check_dataset_exists(target_dir: str) -> bool:
     """
     if not os.path.exists(target_dir) or not os.path.isdir(target_dir):
         return False
-    
+
     trace_files = [f for f in os.listdir(target_dir) if f.endswith('.json')]
     return bool(trace_files)
 

@@ -66,9 +66,10 @@ def parse_args():
         help="template name to use for call graph traversal",
     )
     parser.add_argument(
+        "--output-dir",
         "--output",
-        default=None,
-        help="output file path; defaults to ./<template>-<rank>-main-stack.txt",
+        default="model_main_stack",
+        help="output directory; each rank is written to <template>-<rank>-main-stack.txt",
     )
     return parser.parse_args()
 
@@ -187,14 +188,17 @@ def main():
         ranks_to_analyze = sorted(trace_files.keys())
         print(f"No rank specified, analyzing all ranks: {ranks_to_analyze}")
 
+    output_dir = Path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     for rank in ranks_to_analyze:
-        output_path = args.output or f"./{template_name}-{rank}-main-stack.txt"
+        output_path = output_dir / f"{template_name}-{rank}-main-stack.txt"
         analyze_rank(
             rank=rank,
             trace_files=trace_files,
             template=template,
             template_name=template_name,
-            output_path=output_path,
+            output_path=str(output_path),
         )
 
 

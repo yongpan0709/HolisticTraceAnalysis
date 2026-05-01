@@ -1,1 +1,0 @@
-bash ../scripts/distribute_execute.sh hostfile run.sh

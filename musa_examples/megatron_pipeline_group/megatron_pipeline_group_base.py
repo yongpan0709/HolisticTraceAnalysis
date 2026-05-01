@@ -8,12 +8,14 @@ import json
 import multiprocessing as mp
 import os
 import time
+from abc import ABC
 from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
 
 from hta.common.trace import Trace
+from hta.common.trace_filter import NameFilter, create_regex_for_prefix_match
 from hta.configs.config import logger
 from hta.configs.default_values import DEFAULT_TRACE_DIR
 from hta.common.trace_call_graph import CallGraph
@@ -293,22 +295,6 @@ class MegatronPipelineParallelGroupTraceBase(ABC):
                 }
             )
         return metadata_events
-
-    # def set_rank_info(self):
-    #     for rank in self.get_ranks():
-    #         self.traces[rank]['rank'] = rank    
-
-
-    # def save_traces(self, file_path, ranks=None):
-    #     if ranks is None:
-    #         effective_ranks = self.get_ranks()
-    #     else:
-    #         effective_ranks = set(ranks).intersection(set(self.get_ranks()))
-    #     inputs = []
-    #     for rank in effective_ranks:
-    #         file_path_with_rank = add_rank_to_filename(file_path, rank)
-    #         inputs.append([self.traces[rank], file_path_with_rank, None, self.meta_data[rank]])
-    #     apply_function_for_parallel(save_trace_df_to_file, inputs)
 
     @staticmethod
     def combine_into_one_trace(traces_dict: dict):

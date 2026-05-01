@@ -4,32 +4,15 @@
 
 from __future__ import annotations
 
-import gzip
 import json
-import multiprocessing as mp
-from abc import ABC, abstractmethod
-import os
-import sys
-import time
-import tracemalloc
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Dict, Optional
 
 import numpy as np
-
 import pandas as pd
-import re
 
-from hta.common.trace import Trace
-from hta.common.trace_filter import create_regex_for_prefix_match
+from hta.common.trace_filter import NameFilter, create_regex_for_prefix_match
 from hta.configs.config import logger
 from hta.configs.default_values import DEFAULT_TRACE_DIR
-from hta.configs.parser_config import ParserConfig
-from hta.utils.utils import get_mp_pool_size, normalize_path
-from hta.common.trace_filter import NameFilter
-from hta.utils.utils import add_rank_to_filename, apply_function_for_parallel
-from hta.common.trace_call_graph import CallGraph
-from hta.utils.parallel_state import RankGenerator
-from hta.common.trace_file import get_trace_files
 from .megatron_pipeline_group_base import MegatronPipelineParallelGroupTraceBase
 
 

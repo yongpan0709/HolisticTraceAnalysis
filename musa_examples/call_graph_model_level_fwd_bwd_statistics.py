@@ -188,7 +188,7 @@ def main():
         ranks_to_analyze = sorted(trace_files.keys())
         print(f"No rank specified, analyzing all ranks: {ranks_to_analyze}")
 
-    output_dir = Path(args.output)
+    output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for rank in ranks_to_analyze:

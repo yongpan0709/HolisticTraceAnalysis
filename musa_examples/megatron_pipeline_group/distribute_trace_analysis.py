@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from mpi4py import MPI
 
-from hta.utils.parallel_state import RankGenerator
+from musa_examples.utils.parallel_state import RankGenerator
 from hta.utils.utils import partition_files_across_directories, prepare_directory
 from hta.configs.config import logger
 from hta.configs.default_values import DEFAULT_TRACE_DIR

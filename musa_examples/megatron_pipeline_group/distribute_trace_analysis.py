@@ -18,13 +18,12 @@ import seaborn as sns
 from mpi4py import MPI
 
 from musa_examples.utils.parallel_state import RankGenerator
-from hta.utils.utils import partition_files_across_directories, prepare_directory
+from musa_examples.utils.utils import partition_files_across_directories, prepare_directory
 from hta.configs.config import logger
 from hta.configs.default_values import DEFAULT_TRACE_DIR
 from hta.configs.parser_config import ParserConfig
 from hta.common.trace_call_graph import CallGraph
 from hta.common.trace_filter import NameFilter
-from hta.utils.utils import prepare_directory
 from .megatron_pipeline_group_1f1b_interleaved_epoverlap import MegatronPipelineParallel1F1BInterleavedEPOverlapGroupTrace
 from .megatron_pipeline_group_1f1b import MegatronPipelineParallel1F1BGroupTrace
 from .megatron_pipeline_group_1f1b_interleaved import MegatronPipelineParallel1F1BInterleavedGroupTrace

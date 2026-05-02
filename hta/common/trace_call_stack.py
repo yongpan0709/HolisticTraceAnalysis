@@ -256,8 +256,6 @@ class CallStackGraph:
             if save_call_stack_to_df:
                 self.save_call_stack_to_dataframe(apply_whole_graph=False)
         
-        self._load_nodes_data()
-        
     def save_call_stack_to_dataframe(self, apply_whole_graph: bool = False) -> None:
         """Save the call stack graph information into the trace data frame.
 
@@ -269,60 +267,6 @@ class CallStackGraph:
         self._compute_height(apply_whole_graph=apply_whole_graph)
         self._add_kernel_info_to_cpu_ops(apply_whole_graph=apply_whole_graph)
         self._save_call_stack_to_df()
-    
-    def _load_nodes_data(self):
-        """load node data from DataFrame to dict"""
-        self.nodes_data = {}
-        for _, row in self.df.iterrows():
-            node_id = row['index']
-            self.nodes_data[node_id] = row.to_dict()
-    
-    def get_node_data_by_id(self, node_id, key=None):
-        try:
-            if node_id == self.root_index:
-                row_data = {}
-            else:
-                row_data = self.nodes_data.get(node_id, {})
-            if key is None:
-                return row_data
-            return row_data.get(key, None)
-        except Exception as e:
-            logger.error(f'Error getting node data: {e}, index={node_id}')
-            return None
-    
-    #def set_node_data_by_id(self, node_id, key, value):
-    #    """
-    #    Set the value for a specific key in the node identified by node_id.
-
-    #    Args:
-    #        node_id (int): The index of the node.
-    #        key (str): The key for which the value needs to be set.
-    #        value: The value to be set.
-    #    """
-    #    if node_id == self.root_index:
-    #        return
-    #    try:
-    #        # Use loc to set the value in place
-    #        self.full_df.loc[self.full_df['index'] == node_id, key] = value
-    #        self.nodes_data[node_id][key] = value
-    #    except Exception as e:
-    #        logger.debug(f'Error setting node data: {e}, index={node_id}')
-    
-    #def remove_node_by_id(self, node_id):
-    #    """
-    #    Remove a node from self.full_df by node_id.
-
-    #    Args:
-    #        node_id (int): The index of the node to be removed.
-    #    """
-    #    if node_id in self.nodes_data:
-    #        del self.nodes_data[node_id]
-    #    self.full_df.drop(self.full_df[self.full_df['index'] == node_id].index, inplace=True)
-    
-    #def get_node_name_by_id(self, node_id):
-    #    if node_id == self.root_index:
-    #        return ''
-    #    return self.get_node_data_by_id(node_id, 's_name')
     
     def __repr__(self) -> str:
         """Return a string representation of this CallStackGraph object"""
@@ -947,4 +891,3 @@ class CallStackGraph:
                 self._dfs_traverse_node(child_nid, enter_func, exit_func)
 
         exit_func(node_id, node)
-    

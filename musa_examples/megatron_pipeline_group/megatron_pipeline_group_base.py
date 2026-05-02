@@ -15,7 +15,8 @@ import numpy as np
 import pandas as pd
 
 from hta.common.trace import Trace
-from hta.common.trace_filter import NameFilter, create_regex_for_prefix_match
+from hta.common.trace_filter import NameFilter
+from musa_examples.utils.trace_filter_utils import create_regex_for_prefix_match
 from hta.configs.config import logger
 from hta.configs.default_values import DEFAULT_TRACE_DIR
 from hta.common.trace_call_graph import CallGraph

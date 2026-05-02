@@ -480,4 +480,3 @@ class CallGraph:
         if rank and rank != self._cached_rank:
             self._update_cached_data(rank)
         return self._cached_gpu_kernels
-    

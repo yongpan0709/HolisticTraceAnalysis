@@ -290,46 +290,46 @@ class CallStackGraph:
             logger.error(f'Error getting node data: {e}, index={node_id}')
             return None
     
-    def set_node_data_by_id(self, node_id, key, value):
-        """
-        Set the value for a specific key in the node identified by node_id.
+    #def set_node_data_by_id(self, node_id, key, value):
+    #    """
+    #    Set the value for a specific key in the node identified by node_id.
 
-        Args:
-            node_id (int): The index of the node.
-            key (str): The key for which the value needs to be set.
-            value: The value to be set.
-        """
-        if node_id == self.root_index:
-            return
-        try:
-            # Use loc to set the value in place
-            self.full_df.loc[self.full_df['index'] == node_id, key] = value
-            self.nodes_data[node_id][key] = value
-        except Exception as e:
-            logger.debug(f'Error setting node data: {e}, index={node_id}')
+    #    Args:
+    #        node_id (int): The index of the node.
+    #        key (str): The key for which the value needs to be set.
+    #        value: The value to be set.
+    #    """
+    #    if node_id == self.root_index:
+    #        return
+    #    try:
+    #        # Use loc to set the value in place
+    #        self.full_df.loc[self.full_df['index'] == node_id, key] = value
+    #        self.nodes_data[node_id][key] = value
+    #    except Exception as e:
+    #        logger.debug(f'Error setting node data: {e}, index={node_id}')
     
-    def remove_node_by_id(self, node_id):
-        """
-        Remove a node from self.full_df by node_id.
+    #def remove_node_by_id(self, node_id):
+    #    """
+    #    Remove a node from self.full_df by node_id.
 
-        Args:
-            node_id (int): The index of the node to be removed.
-        """
-        if node_id in self.nodes_data:
-            del self.nodes_data[node_id]
-        self.full_df.drop(self.full_df[self.full_df['index'] == node_id].index, inplace=True)
+    #    Args:
+    #        node_id (int): The index of the node to be removed.
+    #    """
+    #    if node_id in self.nodes_data:
+    #        del self.nodes_data[node_id]
+    #    self.full_df.drop(self.full_df[self.full_df['index'] == node_id].index, inplace=True)
     
-    def get_node_name_by_id(self, node_id):
-        if node_id == self.root_index:
-            return ''
-        return self.get_node_data_by_id(node_id, 's_name')
+    #def get_node_name_by_id(self, node_id):
+    #    if node_id == self.root_index:
+    #        return ''
+    #    return self.get_node_data_by_id(node_id, 's_name')
     
     def __repr__(self) -> str:
         """Return a string representation of this CallStackGraph object"""
 
         s = "CallStackGraph\n"
         for key, item in self.nodes.items():
-            s = s + f"    {key}: {item} , name={self.get_node_name_by_id(key)}\n"
+            s = s + f"    {key}: {item}\n"
 
         return s
 
@@ -948,163 +948,3 @@ class CallStackGraph:
 
         exit_func(node_id, node)
     
-    def print_call_stack(self, node_id=None, level=0, save_path=None):
-        def get_node_info(node_id):
-            if node_id == self.root_index:
-                return 'Root'
-            # try:
-            row_data = self.get_node_data_by_id(node_id)
-            info_dict = {
-                "name": (row_data.get('s_name', -1), ''),
-                "duration": (row_data.get('dur', -1) / 1000, 'ms'),
-                "comm_time": (row_data.get('comm_time', -1) / 1000, 'ms'),
-                "wait_time": (row_data.get('wait_time', -1) / 1000, 'ms'),
-                "input_dims": (row_data.get('input_dims', -1), ''),
-                "input_type": (row_data.get('input_type', -1), ''),
-                "flops": (row_data.get('flops', -1), ''),
-                "TFLOPS": (row_data.get('TFLOPS', -1), ''),
-                "comm_volume": (row_data.get('comm_volumn', -1), 'B'),
-                "bandwidth": (row_data.get('bandwidth', -1), 'GB/s'),
-                "num_kernels": (row_data.get('num_kernels', -1), ''),
-                "kernel_dur_sum": (row_data.get('kernel_dur_sum', -1) / 1000, 'ms'),
-                "kernel_span": (row_data.get('kernel_span', -1) / 1000, 'ms'),
-                "full_name": (row_data.get('full_name', -1), ''),
-            }
-            filtered_info = {k: v for k, v in info_dict.items() if not(isinstance(v[0], (int, float)) and v[0] <= 0)}
-            node_info = ''
-            for key, value in filtered_info.items():
-                node_info += f"{key}={value[0]}{value[1]}, "
-            return node_info
-
-        # If no specific node_id is provided, start from the root node.
-        if node_id is None:
-            node_id = self.root_index
-        node = self.nodes.get(node_id)
-        # Exit the function early if the node doesn't exist.
-        if not node:
-            return
-
-        # Create an indentation based on the current depth level.
-        indent = '    ' * level
-
-        # Build a string that contains information about the current node.
-        
-        # name = self.df.loc[self.df['index'] == node_id, 's_name'].iloc[0] if node_id >= 0 else 'root'
-        node_info = f"{indent}{get_node_info(node_id)}\n"
-        
-        # Sort children by their start time (ts)
-        children_with_ts = [(child_id, self.get_node_data_by_id(child_id).get('ts', float('inf'))) for child_id in node.children]
-        sorted_children = sorted(children_with_ts, key=lambda x: x[1])
-
-        # Recursively call this function for all children of the current node, in sorted order.
-        for child_id, _ in sorted_children:
-            node_info += self.print_call_stack(node_id=child_id, level=level + 1)
-
-        # If it's the top-level call and a save path is specified, save the output to a file.
-        if level == 0 and save_path:
-            with open(save_path, 'w') as file:
-                file.write(node_info)
-            logger.info(f"Call stack has been saved to {save_path}")
-        elif level == 0:  # If no save path is specified, print the output to the console.
-            logger.info(node_info)
-
-        # Return the constructed string for recursive usage.
-        return node_info
-        
-    #def rename_children_with_duplicate_names(self, node_index: int = None):
-    #    """
-    #    Rename child nodes with duplicate names in time order (some_name_0, some_name_1, etc.).
-
-    #    Args:
-    #        node_index (int): The index of the node from which to start the traversal. If None,
-    #                        starts from the root node.
-    #    """
-    #    if node_index is None:
-    #        node_index = self.root_index
-
-    #    # Helper function to recursively rename duplicates
-    #    def _rename_recursively(current_index):
-    #        if current_index not in self.nodes:
-    #            return
-
-    #        # Collect all child nodes' indices
-    #        children_indices = self.nodes[current_index].children
-    #        if not children_indices:
-    #            return
-
-    #        # Map child node names to their indices and timestamps
-    #        name_map = {}
-    #        for child_index in children_indices:
-    #            child_name = self.get_node_data_by_id(child_index, 's_name')
-    #            child_ts = self.get_node_data_by_id(child_index, 'ts')
-    #            if child_name not in name_map:
-    #                name_map[child_name] = []
-    #            name_map[child_name].append((child_ts, child_index))
-
-    #        # Rename duplicates
-    #        for name, entries in name_map.items():
-    #            if len(entries) > 1:
-    #                # Sort entries by timestamp
-    #                entries.sort()
-    #                # Rename each node appending an incrementing index
-    #                for idx, (_, child_index) in enumerate(entries):
-    #                    new_name = f"{name}_{idx}"
-    #                    # self.full_df.loc[self.full_df['index'] == child_index, 's_name'] = new_name
-    #                    self.set_node_data_by_id(child_index, 's_name', new_name)
-
-    #        # Recursively process each child
-    #        for child_index in children_indices:
-    #            _rename_recursively(child_index)
-
-    #    # Start the recursion from the given node index
-    #    _rename_recursively(node_index)
-    
-    #def eliminate_duplicate_named_children(self, node_index: int = None, target_name_list: List[str] = None):
-    #    """
-    #    Traverse the tree and remove child nodes with the same name as their parent nodes.
-    #    If a child node is removed, its children are connected to its parent node.
-
-    #    Args:
-    #        node_index (int): The index of the node from which to start the traversal. If None,
-    #                        starts from the root node.
-    #    """
-    #    if node_index is None:
-    #        node_index = self.root_index
-
-    #    # Helper function to recursively remove duplicate named children
-    #    def _remove_duplicates_recursively(current_index):
-    #        if current_index not in self.nodes:
-    #            return
-
-    #        # Collect all child nodes' indices
-    #        children_indices = self.nodes[current_index].children[:]
-    #        if not children_indices:
-    #            return
-
-    #        parent_name = self.get_node_name_by_id(current_index)
-            
-    #        for child_index in children_indices:
-    #            child_name = self.get_node_name_by_id(child_index)
-                
-    #            if (child_name == parent_name) and (target_name_list is None or child_name in target_name_list):
-    #                # If the child name is the same as the parent name, remove the child
-    #                grand_children_indices = self.nodes[child_index].children
-                    
-    #                # Connect grand children to the parent
-    #                for grand_child_index in grand_children_indices:
-    #                    self.nodes[current_index].children.append(grand_child_index)
-    #                    self.nodes[grand_child_index].parent = current_index
-                    
-    #                # Remove the child node from self.nodes
-    #                self.nodes[current_index].children.remove(child_index)
-    #                del self.nodes[child_index]
-
-    #                # Remove the child node from self.full_df
-    #                self.remove_node_by_id(child_index)
-    #            else:
-    #                # Recursively process each child
-    #                _remove_duplicates_recursively(child_index)
-        
-    #    # Start the recursion from the given node index
-    #    _remove_duplicates_recursively(node_index)
-        

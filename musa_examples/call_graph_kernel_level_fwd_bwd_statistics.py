@@ -13,6 +13,7 @@ import pickle
 import re
 from musa_basic_kernel_info import calculate_groupedlinear_tflops_or_bw, calculate_linear_tflops_or_bw, calculate_scaled_dot_product_attention_flash_musa_flops
 from musa_fwdbwd_util import get_forward_duration_dup, get_forward_duration_uniq
+from utils.call_graph_utils import get_main_stack_on_rank
 
 def extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name):
     shape_info: Dict[str, Dict[str, pd.Series]] = defaultdict(lambda: defaultdict(pd.Series))
@@ -239,7 +240,7 @@ if __name__ == "__main__":
         t1 = time.perf_counter()
         print(f"Rank {rank}, CallGraph took {t1 - t0:.2f} seconds")
         #df = cg.call_stacks[-1].full_df
-        _, main_stack = cg.get_main_stack_on_rank(rank)
+        _, main_stack = get_main_stack_on_rank(cg, rank)
         df = main_stack.full_df
         #df.to_csv(f"./full_df_{rank}.csv", index=False)
         dup_func_name, need_shape_func_name = extract_dup_or_shape_func_name_from_template(output_template_to_file_debug)

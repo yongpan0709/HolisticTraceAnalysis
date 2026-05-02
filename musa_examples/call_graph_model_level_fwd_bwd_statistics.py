@@ -23,6 +23,7 @@ from call_graph_template import (
 )
 from musa_fwdbwd_util import get_backward_duration, get_forward_duration_dup, get_forward_duration_uniq
 from utils import time_it
+from utils.call_graph_utils import get_main_stack_on_rank
 
 TEMPLATE_MAP = {
     "default": output_template_to_file,
@@ -92,7 +93,7 @@ def analyze_rank(
 
     cg = CallGraph(t)
 
-    _, main_stack = cg.get_main_stack_on_rank(rank)
+    _, main_stack = get_main_stack_on_rank(cg, rank)
     df = main_stack.full_df
 
     dup_func_name, _ = extract_dup_or_shape_func_name_from_template(template)

@@ -21,6 +21,7 @@ from hta.configs.default_values import DEFAULT_TRACE_DIR
 from hta.common.trace_call_graph import CallGraph
 from hta.common.trace_file import get_trace_files
 from hta.utils.parallel_state import RankGenerator
+from utils.call_graph_utils import get_main_stack_on_rank
 
 
 def parallel_callgraph_create(rank_id, trace_file):
@@ -29,7 +30,7 @@ def parallel_callgraph_create(rank_id, trace_file):
     t.load_traces()
     t.decode_symbol_ids(use_shorten_name=False)
     cg = CallGraph(t)
-    _, main_stack = cg.get_main_stack_on_rank(rank_id)
+    _, main_stack = get_main_stack_on_rank(cg, rank_id)
     full_df = main_stack.full_df.copy()
     del cg
     del t

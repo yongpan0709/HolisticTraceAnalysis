@@ -481,27 +481,3 @@ class CallGraph:
             self._update_cached_data(rank)
         return self._cached_gpu_kernels
     
-    def get_first_stack_on_rank(self, rank):
-        first_call_stack_id, first_call_stack = next(iter(self.rank_to_stacks[rank].items()))
-        return first_call_stack_id, first_call_stack
-    
-    def get_main_stack_on_rank(self, rank):
-        main_stack_info = self.mapping.loc[
-            self.mapping["rank"].eq(rank) & self.mapping["label"].eq("main")
-        ]
-        
-        if len(main_stack_info) != 1:
-            logger.warning(f'no main stack on rank {rank}, use first stack')
-            return self.get_first_stack_on_rank(rank)
-
-        main_stack_info = main_stack_info.iloc[0].to_dict()
-        main_stack_id = None
-        for call_stack_id in self.rank_to_stacks[rank].keys():
-            if main_stack_info['rank'] == call_stack_id.rank and \
-                main_stack_info['pid'] == call_stack_id.pid and \
-                main_stack_info['tid'] == call_stack_id.tid:
-                    main_stack_id = call_stack_id
-                    break
-        assert(main_stack_id is not None)
-        main_stack = self.rank_to_stacks[rank][main_stack_id]
-        return main_stack_id, main_stack  

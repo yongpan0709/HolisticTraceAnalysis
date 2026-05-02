@@ -255,7 +255,7 @@ class CallStackGraph:
             self._construct_call_stack_graph(df)
             if save_call_stack_to_df:
                 self.save_call_stack_to_dataframe(apply_whole_graph=False)
-        
+
     def save_call_stack_to_dataframe(self, apply_whole_graph: bool = False) -> None:
         """Save the call stack graph information into the trace data frame.
 
@@ -267,7 +267,7 @@ class CallStackGraph:
         self._compute_height(apply_whole_graph=apply_whole_graph)
         self._add_kernel_info_to_cpu_ops(apply_whole_graph=apply_whole_graph)
         self._save_call_stack_to_df()
-    
+
     def __repr__(self) -> str:
         """Return a string representation of this CallStackGraph object"""
 
@@ -379,7 +379,6 @@ class CallStackGraph:
                     stack.pop(-1)
                 if len(stack) > 0 and stack[-1] == ev_idx:
                     stack.pop(-1)
-
         t2 = perf_counter()
 
         self._link_cpu_and_gpu()

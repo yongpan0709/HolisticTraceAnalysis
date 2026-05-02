@@ -21,7 +21,7 @@ from call_graph_template import (
     output_template_to_file_kimi_epoverlap,
     set_pandas_display_options,
 )
-from musa_fwdbwd_util import get_backward_duration, get_forward_duration_dup, get_forward_duration_uniq
+from utils.musa_fwdbwd_util import get_backward_duration, get_forward_duration_dup, get_forward_duration_uniq
 from utils import time_it
 from utils.call_graph_utils import get_main_stack_on_rank
 

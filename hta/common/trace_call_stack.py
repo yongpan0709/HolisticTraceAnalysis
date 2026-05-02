@@ -1011,81 +1011,81 @@ class CallStackGraph:
         # Return the constructed string for recursive usage.
         return node_info
     
-    def mark_send_recv_direction(self, node_index=None, parent_name=None):
-        """
-        Mark the direction (forward or backward) of send/receive operations starting from a given node index.
+    #def mark_send_recv_direction(self, node_index=None, parent_name=None):
+    #    """
+    #    Mark the direction (forward or backward) of send/receive operations starting from a given node index.
         
-        Args:
-            node_index (int): Index of the current node in the graph to be evaluated.
-            parent_name (str): Name of the parent node to determine direction context.
-        """
-        # If no specific node_id is provided, start from the root node.
-        if node_index is None:
-            node_index = self.root_index
+    #    Args:
+    #        node_index (int): Index of the current node in the graph to be evaluated.
+    #        parent_name (str): Name of the parent node to determine direction context.
+    #    """
+    #    # If no specific node_id is provided, start from the root node.
+    #    if node_index is None:
+    #        node_index = self.root_index
             
-        if node_index not in self.nodes:
-            return
+    #    if node_index not in self.nodes:
+    #        return
         
-        node = self.nodes[node_index]
-        # if node_index == self.root_index:
-        #     node_name = ''
-        # else:
-            # node_name = self.df.loc[self.df['index'] == node_index].iloc[0]['s_name']
-        node_name = self.get_node_name_by_id(node_index)
+    #    node = self.nodes[node_index]
+    #    # if node_index == self.root_index:
+    #    #     node_name = ''
+    #    # else:
+    #        # node_name = self.df.loc[self.df['index'] == node_index].iloc[0]['s_name']
+    #    node_name = self.get_node_name_by_id(node_index)
 
-        # Determine the new s_name based on the operation type and parent's context
-        if parent_name is not None:
-            if node_name in 'mccl:send':
-                # print(f"node_name={node_name}, parent_name={parent_name}")
-                if 'send_forward' in parent_name:
-                    new_name = node_name + '(forward)'
-                    self.set_node_data_by_id(node_index, 's_name', new_name)
-                elif 'send_backward' in parent_name:
-                    new_name = node_name + '(backward)'
-                    self.set_node_data_by_id(node_index, 's_name', new_name)
-                # self.df.loc[self.df['index'] == node_index, 's_name'] = new_name
-                # self.set_node_data_by_id(node_index, 's_name', new_name)
-            elif node_name in 'mccl:recv':
-                if 'recv_forward' in parent_name:
-                    new_name = node_name + '(forward)'
-                    self.set_node_data_by_id(node_index, 's_name', new_name)    
-                elif 'recv_backward' in parent_name:
-                    new_name = node_name + '(backward)'
-                    self.set_node_data_by_id(node_index, 's_name', new_name)
-                # self.df.loc[self.df['index'] == node_index, 's_name'] = new_name
-        # Recursively apply this method to all children
-        for child_index in node.children:
-            self.mark_send_recv_direction(child_index, parent_name=node_name)
+    #    # Determine the new s_name based on the operation type and parent's context
+    #    if parent_name is not None:
+    #        if node_name in 'mccl:send':
+    #            # print(f"node_name={node_name}, parent_name={parent_name}")
+    #            if 'send_forward' in parent_name:
+    #                new_name = node_name + '(forward)'
+    #                self.set_node_data_by_id(node_index, 's_name', new_name)
+    #            elif 'send_backward' in parent_name:
+    #                new_name = node_name + '(backward)'
+    #                self.set_node_data_by_id(node_index, 's_name', new_name)
+    #            # self.df.loc[self.df['index'] == node_index, 's_name'] = new_name
+    #            # self.set_node_data_by_id(node_index, 's_name', new_name)
+    #        elif node_name in 'mccl:recv':
+    #            if 'recv_forward' in parent_name:
+    #                new_name = node_name + '(forward)'
+    #                self.set_node_data_by_id(node_index, 's_name', new_name)    
+    #            elif 'recv_backward' in parent_name:
+    #                new_name = node_name + '(backward)'
+    #                self.set_node_data_by_id(node_index, 's_name', new_name)
+    #            # self.df.loc[self.df['index'] == node_index, 's_name'] = new_name
+    #    # Recursively apply this method to all children
+    #    for child_index in node.children:
+    #        self.mark_send_recv_direction(child_index, parent_name=node_name)
     
-    def assign_full_names(self):
-        """
-        Assign a 'full_name' to each node in the graph, which is a concatenation of all ancestor
-        node names from the root, separated by '/'.
-        """
-        # Helper function to recursively assign full names
-        def _assign_full_name(current_index, current_path):
-            if current_index not in self.nodes:
-                return
+    #def assign_full_names(self):
+    #    """
+    #    Assign a 'full_name' to each node in the graph, which is a concatenation of all ancestor
+    #    node names from the root, separated by '/'.
+    #    """
+    #    # Helper function to recursively assign full names
+    #    def _assign_full_name(current_index, current_path):
+    #        if current_index not in self.nodes:
+    #            return
 
-            # Get the current node's name
-            # current_node_name = self.full_df.loc[self.full_df['index'] == current_index, 's_name'].iat[0] if current_index != self.root_index else ''
-            current_node_name = self.get_node_name_by_id(current_index)
-            if current_path:
-                # Append the current node name to the path, separated by '/'
-                full_name = f"{current_path}/{current_node_name}" if current_node_name else current_path
-            else:
-                full_name = current_node_name
+    #        # Get the current node's name
+    #        # current_node_name = self.full_df.loc[self.full_df['index'] == current_index, 's_name'].iat[0] if current_index != self.root_index else ''
+    #        current_node_name = self.get_node_name_by_id(current_index)
+    #        if current_path:
+    #            # Append the current node name to the path, separated by '/'
+    #            full_name = f"{current_path}/{current_node_name}" if current_node_name else current_path
+    #        else:
+    #            full_name = current_node_name
 
-            # Store the full name in the DataFrame
-            self.set_node_data_by_id(current_index, 'full_name', full_name)
+    #        # Store the full name in the DataFrame
+    #        self.set_node_data_by_id(current_index, 'full_name', full_name)
 
-            # Recursively process each child
-            children_indices = self.nodes[current_index].children
-            for child_index in children_indices:
-                _assign_full_name(child_index, full_name)
+    #        # Recursively process each child
+    #        children_indices = self.nodes[current_index].children
+    #        for child_index in children_indices:
+    #            _assign_full_name(child_index, full_name)
 
-        # Start the recursion from the root node
-        _assign_full_name(self.root_index, '')
+    #    # Start the recursion from the root node
+    #    _assign_full_name(self.root_index, '')
         
     def rename_children_with_duplicate_names(self, node_index: int = None):
         """

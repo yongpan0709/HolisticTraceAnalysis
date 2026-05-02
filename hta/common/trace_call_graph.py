@@ -532,15 +532,15 @@ class CallGraph:
 
         self.apply_function_for_parallel('print_call_stack', inputs_list)
                 
-    def mark_send_recv_direction(self):
-        self.apply_function_for_parallel('mark_send_recv_direction')
+    #def mark_send_recv_direction(self):
+    #    self.apply_function_for_parallel('mark_send_recv_direction')
     
-    def eliminate_duplicate_named_children(self, target_name_list):
-        inputs_list = [((), {'target_name_list': target_name_list}) for _ in self.ranks]
-        self.apply_function_for_parallel('eliminate_duplicate_named_children', inputs_list)
+    #def eliminate_duplicate_named_children(self, target_name_list):
+    #    inputs_list = [((), {'target_name_list': target_name_list}) for _ in self.ranks]
+    #    self.apply_function_for_parallel('eliminate_duplicate_named_children', inputs_list)
     
-    def assign_full_names(self):
-        self.apply_function_for_parallel('assign_full_names')
+    #def assign_full_names(self):
+    #    self.apply_function_for_parallel('assign_full_names')
     
-    def rename_children_with_duplicate_names(self):
-        self.apply_function_for_parallel('rename_children_with_duplicate_names')
+    #def rename_children_with_duplicate_names(self):
+    #    self.apply_function_for_parallel('rename_children_with_duplicate_names')

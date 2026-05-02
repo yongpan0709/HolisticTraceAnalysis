@@ -375,9 +375,7 @@ class CallStackGraph:
                 self._add_edge(parent_index, ev_idx)
                 stack.append(ev_idx)
             else:  # e.type == 1
-                while len(stack) > 0 and stack[-1] != ev_idx and ev_idx in stack:
-                    stack.pop(-1)
-                if len(stack) > 0 and stack[-1] == ev_idx:
+                if len(stack) > 0:
                     stack.pop(-1)
         t2 = perf_counter()
 

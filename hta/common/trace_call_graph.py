@@ -506,41 +506,4 @@ class CallGraph:
                     break
         assert(main_stack_id is not None)
         main_stack = self.rank_to_stacks[rank][main_stack_id]
-        return main_stack_id, main_stack
-
-    def apply_function_for_parallel(self, func_name, inputs_list=None):
-        stacks = [self.get_main_stack_on_rank(rank) for rank in self.ranks]
-        stacks_ids = [stack[0] for stack in stacks]
-        stacks_instances = [stack[1] for stack in stacks]
-        self.call_stacks = [stack for stack in self.call_stacks if stack not in stacks_instances]
-        
-        apply_class_function_for_parallel(stacks_instances, func_name, inputs_list)
-        
-        for rank, stack_id, stack_instance in zip(self.ranks, stacks_ids, stacks_instances):
-            self.rank_to_stacks[rank][stack_id] = stack_instance
-            self.trace_data.traces[rank] = stack_instance.full_df
-        self.call_stacks += stacks_instances        
-    
-    def print_call_graph(self, save_path=None):
-        if save_path is not None:
-            inputs_list = [
-                ((), {'save_path': add_rank_to_filename(save_path, rank)})
-                for rank in self.ranks
-            ]
-        else:
-            inputs_list = None
-
-        self.apply_function_for_parallel('print_call_stack', inputs_list)
-                
-    #def mark_send_recv_direction(self):
-    #    self.apply_function_for_parallel('mark_send_recv_direction')
-    
-    #def eliminate_duplicate_named_children(self, target_name_list):
-    #    inputs_list = [((), {'target_name_list': target_name_list}) for _ in self.ranks]
-    #    self.apply_function_for_parallel('eliminate_duplicate_named_children', inputs_list)
-    
-    #def assign_full_names(self):
-    #    self.apply_function_for_parallel('assign_full_names')
-    
-    #def rename_children_with_duplicate_names(self):
-    #    self.apply_function_for_parallel('rename_children_with_duplicate_names')
+        return main_stack_id, main_stack  

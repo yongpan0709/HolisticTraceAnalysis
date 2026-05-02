@@ -7,8 +7,6 @@ from hta.common.trace_call_stack import CallStackGraph, CallStackIdentity, CallS
 from hta.common.trace_symbol_table import TraceSymbolTable
 from hta.common.types import DeviceType, infer_device_type
 from hta.configs.config import logger
-from hta.utils.utils import add_rank_to_filename, apply_function_for_parallel, apply_class_function_for_parallel
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 class CallGraph:

@@ -173,12 +173,7 @@ def shorten_name(name: str) -> str:
                 stack.pop()
         else:
             stack.append(c)
-            
-    new_name = "".join(stack)
-    
-    if 'autograd::engine::evaluate_function' in new_name:
-        return new_name.replace(" ", "")
-    return new_name.split(" ")[-1]
+    return "".join(stack).split(" ")[-1]
 
 
 def flatten_column_names(df: pd.DataFrame) -> None:

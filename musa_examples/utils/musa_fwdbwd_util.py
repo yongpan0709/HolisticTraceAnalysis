@@ -4,7 +4,7 @@ from typing import Dict, List
 from collections import deque
 import numpy as np
 import pandas as pd
-from utils import time_it
+from .timing import time_it
 
 @time_it("get_backward_duration")
 def get_backward_duration(df, cg, rank, forward_index):

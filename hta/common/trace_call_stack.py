@@ -1010,177 +1010,101 @@ class CallStackGraph:
 
         # Return the constructed string for recursive usage.
         return node_info
-    
-    #def mark_send_recv_direction(self, node_index=None, parent_name=None):
-    #    """
-    #    Mark the direction (forward or backward) of send/receive operations starting from a given node index.
         
-    #    Args:
-    #        node_index (int): Index of the current node in the graph to be evaluated.
-    #        parent_name (str): Name of the parent node to determine direction context.
+    #def rename_children_with_duplicate_names(self, node_index: int = None):
     #    """
-    #    # If no specific node_id is provided, start from the root node.
+    #    Rename child nodes with duplicate names in time order (some_name_0, some_name_1, etc.).
+
+    #    Args:
+    #        node_index (int): The index of the node from which to start the traversal. If None,
+    #                        starts from the root node.
+    #    """
     #    if node_index is None:
     #        node_index = self.root_index
-            
-    #    if node_index not in self.nodes:
-    #        return
-        
-    #    node = self.nodes[node_index]
-    #    # if node_index == self.root_index:
-    #    #     node_name = ''
-    #    # else:
-    #        # node_name = self.df.loc[self.df['index'] == node_index].iloc[0]['s_name']
-    #    node_name = self.get_node_name_by_id(node_index)
 
-    #    # Determine the new s_name based on the operation type and parent's context
-    #    if parent_name is not None:
-    #        if node_name in 'mccl:send':
-    #            # print(f"node_name={node_name}, parent_name={parent_name}")
-    #            if 'send_forward' in parent_name:
-    #                new_name = node_name + '(forward)'
-    #                self.set_node_data_by_id(node_index, 's_name', new_name)
-    #            elif 'send_backward' in parent_name:
-    #                new_name = node_name + '(backward)'
-    #                self.set_node_data_by_id(node_index, 's_name', new_name)
-    #            # self.df.loc[self.df['index'] == node_index, 's_name'] = new_name
-    #            # self.set_node_data_by_id(node_index, 's_name', new_name)
-    #        elif node_name in 'mccl:recv':
-    #            if 'recv_forward' in parent_name:
-    #                new_name = node_name + '(forward)'
-    #                self.set_node_data_by_id(node_index, 's_name', new_name)    
-    #            elif 'recv_backward' in parent_name:
-    #                new_name = node_name + '(backward)'
-    #                self.set_node_data_by_id(node_index, 's_name', new_name)
-    #            # self.df.loc[self.df['index'] == node_index, 's_name'] = new_name
-    #    # Recursively apply this method to all children
-    #    for child_index in node.children:
-    #        self.mark_send_recv_direction(child_index, parent_name=node_name)
-    
-    #def assign_full_names(self):
-    #    """
-    #    Assign a 'full_name' to each node in the graph, which is a concatenation of all ancestor
-    #    node names from the root, separated by '/'.
-    #    """
-    #    # Helper function to recursively assign full names
-    #    def _assign_full_name(current_index, current_path):
+    #    # Helper function to recursively rename duplicates
+    #    def _rename_recursively(current_index):
     #        if current_index not in self.nodes:
     #            return
 
-    #        # Get the current node's name
-    #        # current_node_name = self.full_df.loc[self.full_df['index'] == current_index, 's_name'].iat[0] if current_index != self.root_index else ''
-    #        current_node_name = self.get_node_name_by_id(current_index)
-    #        if current_path:
-    #            # Append the current node name to the path, separated by '/'
-    #            full_name = f"{current_path}/{current_node_name}" if current_node_name else current_path
-    #        else:
-    #            full_name = current_node_name
+    #        # Collect all child nodes' indices
+    #        children_indices = self.nodes[current_index].children
+    #        if not children_indices:
+    #            return
 
-    #        # Store the full name in the DataFrame
-    #        self.set_node_data_by_id(current_index, 'full_name', full_name)
+    #        # Map child node names to their indices and timestamps
+    #        name_map = {}
+    #        for child_index in children_indices:
+    #            child_name = self.get_node_data_by_id(child_index, 's_name')
+    #            child_ts = self.get_node_data_by_id(child_index, 'ts')
+    #            if child_name not in name_map:
+    #                name_map[child_name] = []
+    #            name_map[child_name].append((child_ts, child_index))
+
+    #        # Rename duplicates
+    #        for name, entries in name_map.items():
+    #            if len(entries) > 1:
+    #                # Sort entries by timestamp
+    #                entries.sort()
+    #                # Rename each node appending an incrementing index
+    #                for idx, (_, child_index) in enumerate(entries):
+    #                    new_name = f"{name}_{idx}"
+    #                    # self.full_df.loc[self.full_df['index'] == child_index, 's_name'] = new_name
+    #                    self.set_node_data_by_id(child_index, 's_name', new_name)
 
     #        # Recursively process each child
-    #        children_indices = self.nodes[current_index].children
     #        for child_index in children_indices:
-    #            _assign_full_name(child_index, full_name)
+    #            _rename_recursively(child_index)
 
-    #    # Start the recursion from the root node
-    #    _assign_full_name(self.root_index, '')
-        
-    def rename_children_with_duplicate_names(self, node_index: int = None):
-        """
-        Rename child nodes with duplicate names in time order (some_name_0, some_name_1, etc.).
-
-        Args:
-            node_index (int): The index of the node from which to start the traversal. If None,
-                            starts from the root node.
-        """
-        if node_index is None:
-            node_index = self.root_index
-
-        # Helper function to recursively rename duplicates
-        def _rename_recursively(current_index):
-            if current_index not in self.nodes:
-                return
-
-            # Collect all child nodes' indices
-            children_indices = self.nodes[current_index].children
-            if not children_indices:
-                return
-
-            # Map child node names to their indices and timestamps
-            name_map = {}
-            for child_index in children_indices:
-                child_name = self.get_node_data_by_id(child_index, 's_name')
-                child_ts = self.get_node_data_by_id(child_index, 'ts')
-                if child_name not in name_map:
-                    name_map[child_name] = []
-                name_map[child_name].append((child_ts, child_index))
-
-            # Rename duplicates
-            for name, entries in name_map.items():
-                if len(entries) > 1:
-                    # Sort entries by timestamp
-                    entries.sort()
-                    # Rename each node appending an incrementing index
-                    for idx, (_, child_index) in enumerate(entries):
-                        new_name = f"{name}_{idx}"
-                        # self.full_df.loc[self.full_df['index'] == child_index, 's_name'] = new_name
-                        self.set_node_data_by_id(child_index, 's_name', new_name)
-
-            # Recursively process each child
-            for child_index in children_indices:
-                _rename_recursively(child_index)
-
-        # Start the recursion from the given node index
-        _rename_recursively(node_index)
+    #    # Start the recursion from the given node index
+    #    _rename_recursively(node_index)
     
-    def eliminate_duplicate_named_children(self, node_index: int = None, target_name_list: List[str] = None):
-        """
-        Traverse the tree and remove child nodes with the same name as their parent nodes.
-        If a child node is removed, its children are connected to its parent node.
+    #def eliminate_duplicate_named_children(self, node_index: int = None, target_name_list: List[str] = None):
+    #    """
+    #    Traverse the tree and remove child nodes with the same name as their parent nodes.
+    #    If a child node is removed, its children are connected to its parent node.
 
-        Args:
-            node_index (int): The index of the node from which to start the traversal. If None,
-                            starts from the root node.
-        """
-        if node_index is None:
-            node_index = self.root_index
+    #    Args:
+    #        node_index (int): The index of the node from which to start the traversal. If None,
+    #                        starts from the root node.
+    #    """
+    #    if node_index is None:
+    #        node_index = self.root_index
 
-        # Helper function to recursively remove duplicate named children
-        def _remove_duplicates_recursively(current_index):
-            if current_index not in self.nodes:
-                return
+    #    # Helper function to recursively remove duplicate named children
+    #    def _remove_duplicates_recursively(current_index):
+    #        if current_index not in self.nodes:
+    #            return
 
-            # Collect all child nodes' indices
-            children_indices = self.nodes[current_index].children[:]
-            if not children_indices:
-                return
+    #        # Collect all child nodes' indices
+    #        children_indices = self.nodes[current_index].children[:]
+    #        if not children_indices:
+    #            return
 
-            parent_name = self.get_node_name_by_id(current_index)
+    #        parent_name = self.get_node_name_by_id(current_index)
             
-            for child_index in children_indices:
-                child_name = self.get_node_name_by_id(child_index)
+    #        for child_index in children_indices:
+    #            child_name = self.get_node_name_by_id(child_index)
                 
-                if (child_name == parent_name) and (target_name_list is None or child_name in target_name_list):
-                    # If the child name is the same as the parent name, remove the child
-                    grand_children_indices = self.nodes[child_index].children
+    #            if (child_name == parent_name) and (target_name_list is None or child_name in target_name_list):
+    #                # If the child name is the same as the parent name, remove the child
+    #                grand_children_indices = self.nodes[child_index].children
                     
-                    # Connect grand children to the parent
-                    for grand_child_index in grand_children_indices:
-                        self.nodes[current_index].children.append(grand_child_index)
-                        self.nodes[grand_child_index].parent = current_index
+    #                # Connect grand children to the parent
+    #                for grand_child_index in grand_children_indices:
+    #                    self.nodes[current_index].children.append(grand_child_index)
+    #                    self.nodes[grand_child_index].parent = current_index
                     
-                    # Remove the child node from self.nodes
-                    self.nodes[current_index].children.remove(child_index)
-                    del self.nodes[child_index]
+    #                # Remove the child node from self.nodes
+    #                self.nodes[current_index].children.remove(child_index)
+    #                del self.nodes[child_index]
 
-                    # Remove the child node from self.full_df
-                    self.remove_node_by_id(child_index)
-                else:
-                    # Recursively process each child
-                    _remove_duplicates_recursively(child_index)
+    #                # Remove the child node from self.full_df
+    #                self.remove_node_by_id(child_index)
+    #            else:
+    #                # Recursively process each child
+    #                _remove_duplicates_recursively(child_index)
         
-        # Start the recursion from the given node index
-        _remove_duplicates_recursively(node_index)
+    #    # Start the recursion from the given node index
+    #    _remove_duplicates_recursively(node_index)
         

@@ -234,6 +234,7 @@ class NameStringColumnFilter(Filter):
 
         return df.loc[df[name_column].str.match(self.name_pattern)]
 
+
 class NameIdColumnFilter(Filter):
     def __init__(self, name_pattern: str) -> None:
         self.name_pattern = name_pattern

@@ -1,6 +1,5 @@
 from collections import defaultdict
 from typing import Dict, List, Set
-import copy
 import pandas as pd
 from musa_examples.utils.musa_basic_kernel_info import calculate_CheckpointWithoutOutputFunction, calculate_groupedlinear_tflops_or_bw, calculate_linear_tflops_or_bw, calculate_scaled_dot_product_attention_flash_musa_flops
 

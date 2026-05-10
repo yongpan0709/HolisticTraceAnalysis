@@ -1,6 +1,5 @@
-from pathlib import Path 
+from pathlib import Path
 from hta.common.trace_file import get_trace_files
-from hta.configs.config import logger
 import json
 import re
 
@@ -25,7 +24,6 @@ def fix_json_value_missing(file_path):
 
 # HTA_DISABLE_NS_ROUNDING=1 python call_graph_kernel_dur_sum.py
 if __name__ == "__main__":
-    import time
     base_dir = "../"
     trace_dir = str(Path(base_dir).joinpath("2025-12-21_002019_fp8_balancing/iteration_8"))
     #cfg = ParserConfig.get_default_cfg()

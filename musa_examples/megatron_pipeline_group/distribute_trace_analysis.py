@@ -1,11 +1,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from collections import defaultdict
-from enum import auto, Flag
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import List, Optional, Tuple
 import os
-import copy
 import logging
 import pickle
 import shutil
@@ -20,10 +17,6 @@ from mpi4py import MPI
 from musa_examples.utils.parallel_state import RankGenerator
 from musa_examples.utils.utils import partition_files_across_directories, prepare_directory
 from hta.configs.config import logger
-from hta.configs.default_values import DEFAULT_TRACE_DIR
-from hta.configs.parser_config import ParserConfig
-from hta.common.trace_call_graph import CallGraph
-from hta.common.trace_filter import NameFilter
 from .megatron_pipeline_group_1f1b_interleaved_epoverlap import MegatronPipelineParallel1F1BInterleavedEPOverlapGroupTrace
 from .megatron_pipeline_group_1f1b import MegatronPipelineParallel1F1BGroupTrace
 from .megatron_pipeline_group_1f1b_interleaved import MegatronPipelineParallel1F1BInterleavedGroupTrace

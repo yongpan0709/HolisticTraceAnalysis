@@ -1,5 +1,4 @@
 from hta.common.trace_call_graph import CallStackIdentity
-from collections import defaultdict
 from typing import Dict, List
 from collections import deque
 import numpy as np

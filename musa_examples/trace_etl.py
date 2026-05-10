@@ -2,12 +2,8 @@ import json
 import argparse
 
 from copy import deepcopy  # 导入 deepcopy
-from pathlib import Path 
-from hta.common.trace_file import get_trace_files
 import re
 import os
-import time
-import multiprocessing as mp
 from musa_examples.trace_json_repair import fix_json_value_missing
 from musa_examples.megatron_pipeline_group.distribute_trace_analysis import DistributedMegatronTraceAnalysis
   

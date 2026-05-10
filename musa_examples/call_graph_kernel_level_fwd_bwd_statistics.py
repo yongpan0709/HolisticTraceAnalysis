@@ -1,7 +1,6 @@
-from pathlib import Path 
+from pathlib import Path
 from hta.common.trace import Trace
 from hta.common.trace_file import get_trace_files
-from hta.configs.config import logger
 from hta.configs.parser_config import  ParserConfig
 from hta.common.trace_call_graph import CallGraph, CallStackIdentity
 from collections import defaultdict
@@ -9,7 +8,6 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 from musa_examples.call_graph_template import extract_func_name_from_template, extract_dup_or_shape_func_name_from_template, set_pandas_display_options
-import pickle
 import re
 from musa_examples.utils.musa_basic_kernel_info import calculate_groupedlinear_tflops_or_bw, calculate_linear_tflops_or_bw, calculate_scaled_dot_product_attention_flash_musa_flops
 from musa_examples.utils.musa_fwdbwd_util import get_forward_duration_dup, get_forward_duration_uniq

@@ -10,7 +10,7 @@ from hta.common.trace_filter import NameFilter
 from musa_examples.utils.trace_filter_utils import create_regex_for_prefix_match
 from hta.configs.config import logger
 from hta.configs.default_values import DEFAULT_TRACE_DIR
-from .megatron_pipeline_group_base import MegatronPipelineParallelGroupTraceBase
+from musa_examples.megatron_pipeline_group.megatron_pipeline_group_base import MegatronPipelineParallelGroupTraceBase
 
 def get_pp_rank_microbatches(
     num_microbatches,

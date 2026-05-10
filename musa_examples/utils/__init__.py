@@ -1,5 +1,5 @@
 # musa_examples utils module
-from .musa_basic_kernel_info import (
+from musa_examples.utils.musa_basic_kernel_info import (
     BYTES_DICT,
     calculate_CheckpointWithoutOutputFunction,
     calculate_groupedlinear_tflops_or_bw,
@@ -8,12 +8,12 @@ from .musa_basic_kernel_info import (
     drop_empty_arrays,
     get_num_of_bytes,
 )
-from .musa_fwdbwd_util import (
+from musa_examples.utils.musa_fwdbwd_util import (
     get_backward_duration,
     get_forward_duration_dup,
     get_forward_duration_uniq,
 )
-from .parallel_state import (
+from musa_examples.utils.parallel_state import (
     RankGenerator,
     generate_masked_orthogonal_rank_groups,
     get_data_parallel_group_id,
@@ -25,7 +25,7 @@ from .parallel_state import (
     is_first_stage,
     is_last_stage,
 )
-from .timing import (
+from musa_examples.utils.timing import (
     TimingRecord,
     TimingTracker,
     get_timer,

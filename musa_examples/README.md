@@ -2,27 +2,23 @@
 
 ## 概述
 
-`musa_examples/` 目录的核心是 DHTA（Distributed Holistic Trace Analysis）分布式分析工具。DHTA 基于 HTA（Holistic Trace Analysis）的单机 trace 解析与调用图能力，面向 Megatron-LM 等大规模分布式训练场景，将超大规模 GPU trace 按 Pipeline Parallel Group 分发到多节点并行处理，并在节点间聚合分析结果。
+`musa_examples/` 目录的核心是 DHTA（Distributed Holistic Trace Analysis）分布式分析工具。DHTA 基于 HTA（Holistic Trace Analysis）的 trace 解析与基础分析能力，面向 Megatron-LM 大规模分布式训练场景，将超大规模 GPU/Rank tracs 按 Pipeline Parallel Group 分发到多节点并行处理，并在节点间聚合分析结果。
 
-DHTA 的目标不是简单地跑单机脚本，而是解决集群规模下 trace 数据量大、单节点处理慢、跨 rank 性能差异难定位的问题。它重点支持 Megatron Pipeline Parallel 场景下的集群级性能瓶颈分析、异常算子检测、Pipeline bubble 分析和负载不均衡分析。
+DHTA 的目标不仅是简单地跑单机脚本，而是解决集群规模下 trace 数据量大、单节点处理慢、跨 rank 性能差异难定位的问题。它重点支持 Megatron Pipeline Parallel 场景下的集群级性能瓶颈分析、异常算子检测、Pipeline bubble 分析和负载不均衡分析。
 
 除 DHTA 主流程外，本目录还包含若干基于调用图模板的模型层级、内核层级分析脚本，可用于对单个 rank 或局部 trace 进行更细粒度的 forward/backward 统计。
 
 ## 目录定位
 
-`musa_examples/` 主要包含三类工具：
+`musa_examples/` 主要包含2类工具：
 
 1. **DHTA 分布式分析主流程**
-   - 按 Pipeline Parallel Group 切分 trace。
-   - 多节点、多进程并行执行 HTA 分析。
-   - 汇总生成集群级结果。
-   - 支持异常算子、Pipeline bubble、负载不均衡等专项分析。
+   - 按 Pipeline Parallel Group 对 trace 分组
+   - 多节点、多进程并行执行分析
+   - 汇总生成集群级结果
+   - 支持异常耗时、Pipeline bubble、负载不均衡等分析。
 
-2. **Trace ETL 与预处理工具**
-   - 对原始 trace 做过滤、整理、软链接组织等准备工作。
-   - 为分布式分析生成统一的 workspace 目录结构。
-
-3. **模型 / 内核层级统计脚本**
+2. **模型 / 内核层级统计脚本**
    - 基于 `CallGraph` 和模板匹配模型结构。
    - 统计模型组件的 forward/backward 时间。
    - 对指定 kernel 进一步计算 shape、TFLOPS、带宽等指标。
@@ -31,9 +27,9 @@ DHTA 的目标不是简单地跑单机脚本，而是解决集群规模下 trace
 
 ### 设计目标
 
-DHTA 用于扩展 HTA 的单机分析能力，使其适用于大规模 Megatron Pipeline Parallel 训练 trace。它以 Pipeline Parallel Group 为基本任务单元，将不同 PP group 分发到多台机器处理，每台机器内部再并行处理 group 内多个 rank，最后通过 MPI 聚合集群级结果。
+DHTA 用于扩展 HTA 的分析能力，使其适用于基于Pytorch + Megatron-LM 的大规模分布式训练。它以 Pipeline Parallel Group 为基本任务单元，将不同 PP group 分发到多台机器处理，每台机器内部再并行处理 group 内多个 rank，最后通过 MPI 聚合集群级结果。
 
-### 主要能力
+### 主要能力(规划)
 
 1. **按 Pipeline Parallel Group 分发分析任务**
    - 每个 PP group 对应一组 rank。
@@ -63,13 +59,18 @@ DHTA 用于扩展 HTA 的单机分析能力，使其适用于大规模 Megatron 
 # 1. 获取代码
 git clone https://sh-code.mthreads.com/ai/HolisticTraceAnalysis
 cd HolisticTraceAnalysis
-git checkout develop
+
+# 如需切换到特定分支，请按实际开发分支执行 git checkout
 
 # 安装单机
-cd HolisticTraceAnalysis
 pip install -r requirements.txt
 pip install -e .
 
+# 构建wheel
+pip wheel . --wheel-dir=dist/ --no-deps --use-pep517 --no-build-isolation
+
+# 或直接安装whl
+pip install traceinsight-*-py3-none-any.whl -i https://pypi.tuna.tsinghua.edu.cn/simple
 # 安装多机(当1000卡甚至更大规模的trace需要分析时，可以支持多机并行分析)
 cd musa_examples/
 bash install_hta.sh <HolisticTraceAnalysis_Path>  # 需要hostfile
@@ -84,7 +85,7 @@ bash install_hta.sh <HolisticTraceAnalysis_Path>  # 需要hostfile
 
 - **HTA 安装路径**：用于确保各节点能够导入本地 HTA 代码。
 - **Trace 根目录**：原始 Megatron trace 所在路径。
-- **TP / DP / PP size**：张量并行、数据并行、流水线并行规模。
+- **TP / DP / PP / EP size**：张量并行、数据并行、流水线并行规模。
 - **NUM_PP_GROUP**：通常为 `world_size / pp_size`，也可理解为 `tp_size * dp_size`。
 - **Workspace 路径**：DHTA 中间文件、日志和输出结果目录。
 - **节点与 rank 映射**：决定不同 PP group 分发到哪些机器处理。
@@ -94,10 +95,12 @@ bash install_hta.sh <HolisticTraceAnalysis_Path>  # 需要hostfile
 DHTA 通常会在 `workspace/<project_name>/` 下生成以下目录：
 
 ```text
-workspace/<project_name>/
-├── log/      # 各节点、各 rank 的分析日志
-├── output/   # 本地 PP group 结果和集群级聚合结果
-└── trace/    # 每个 PP group 内各 rank 的 trace.json 软链接
+workspace/
+└── <project_name>/
+    ├── log/      # 各节点、各 rank 的分析日志
+    ├── output/   # 本地 PP group 结果和集群级聚合结果
+    └── trace/    # 每个 PP group 内各 rank 的 trace.json 软链接
+        └── report-pp0.csv
 ```
 
 本地分析结果通常包括：
@@ -105,6 +108,93 @@ workspace/<project_name>/
 1. Transformer Layer 关键组件的时间占比，保存为 txt 文件。
 2. 关键组件对应的 trace 片段和多 rank 合并结果，保存为 json 文件。
 3. Pipeline bubble 与负载不均衡开销分析，保存为 csv 文件。
+
+### `parse_megatron.py` 命令行用法
+
+`parse_megatron.py` 是 `DistributedMegatronTraceAnalysis` 的轻量入口脚本，用于按给定的 Megatron 并行配置直接启动分布式 trace 分析。当前版本支持通过命令行传入 trace 路径、TP/PP/DP/EP 并行规模、pipeline 调度方式、micro batch 数量、virtual pipeline parallel size，以及可选的 PP group 范围过滤。
+
+#### `parse_megatron.py` 运行常用参数
+
+```bash
+cd <HTA Path>
+python -m musa_examples.parse_megatron \
+  --trace-dir /path/to/trace-dir \
+  --tp 1 \
+  --pp 4 \
+  --dp 2 \
+  --ep 8 \
+  --num-bs 16 \
+  --pp-schedule 1f1b
+```
+
+#### 只分析其中部分 PP Group
+如果只想分析部分 pipeline parallel group，可以增加 `--pp-group-id-range START END`，其中 `START` 和 `END` 都是闭区间端点：
+
+```bash
+cd <HTA Path>
+python -m musa_examples.parse_megatron \
+  --trace-dir /path/to/trace-dir \
+  --tp 1 \
+  --pp 4 \
+  --dp 2 \
+  --ep 8 \
+  --num-bs 16 \
+  --pp-schedule 1f1b \
+  --pp-group-id-range 0 3
+```
+
+#### VPP 分析
+当前支持的调度方式为 `1f1b`、`1f1b-interleaved` 和 `1f1b-interleaved-epoverlap`。对于 interleaved / EP overlap 场景，可额外指定 `--vpp`：
+
+```bash
+cd <HTA Path>
+python -m musa_examples.parse_megatron \
+  --trace-dir /path/to/trace-dir \
+  --tp 1 \
+  --pp 2 \
+  --dp 1 \
+  --ep 8 \
+  --num-bs 16 \
+  --vpp 2 \
+  --pp-schedule 1f1b-interleaved
+```
+
+#### MPI 多机并行分析加速
+如果需要多机运行，可使用 MPI 启动该脚本，例如文件末尾保留的示例命令所示：
+* -np = hostfile ip数量 * <cnt> (对应ppr:<cnt>:node)
+* ppr:<cnt>:node 代表每个机器起<cnt>个进程，下面过滤的流程不会爆 cpu 内存，所以建议ppr::node建议设成2~4
+
+```bash
+# 2机，每机启动一个进程
+# hostfile中，需要准备两台服务器对应IP, 并且都安装了HTA，trace放在共享目录/存储中
+mpirun -allow-run-as-root -np 2 --bind-to none \
+  --hostfile ./hostfile \
+  --map-by ppr:1:node \
+  --wdir /path/to/HolisticTraceAnalysis \
+  python -m musa_examples.parse_megatron --trace-dir /path/to/trace-dir
+
+# 2机，每机启动一个进程
+# hostfile中，需要准备两台服务器对应IP, 并且都安装了HTA，trace放在共享目录/存储中
+mpirun -allow-run-as-root -np 16 --bind-to none \
+  --hostfile ./hostfile \
+  --map-by ppr:8:node --wdir /path/to/HolisticTraceAnalysis \
+  python -m musa_examples.parse_megatron --trace-dir /path/to/trace-dir \
+  --tp 1 --pp 31 --dp 3 --num-bs 128
+```
+
+### `parse_megatron.py` 命令行参数
+
+| 参数 | 是否必需 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `--trace-dir` | 是 | 无 | trace 目录。 |
+| `--tp` | 否 | `1` | Tensor Parallel size。 |
+| `--pp` | 否 | `2` | Pipeline Parallel size。 |
+| `--dp` | 否 | `1` | Data Parallel size。 |
+| `--ep` | 否 | `8` | Expert Parallel size。 |
+| `--pp-schedule` | 否 | `1f1b` | pipeline 调度方式，可选：`1f1b`、`1f1b-interleaved`、`1f1b-interleaved-epoverlap`。 |
+| `--num-bs` | 否 | `16` | micro batch 数量，传给 `micro_bs`。 |
+| `--vpp` | 否 | `2` | Virtual Pipeline Parallel size。 |
+| `--pp-group-id-range` | 否 | `None` | 仅分析指定的 PP group 闭区间，格式为 `START END`，例如 `0 3`。 |
 
 集群级聚合结果通常包括：
 
@@ -116,13 +206,17 @@ workspace/<project_name>/
 
 ### DHTA 主流程相关
 
+- `parse_megatron.py`
+  - `DistributedMegatronTraceAnalysis` 的当前命令行入口。
+  - 用于按给定的 TP / PP / DP / EP 配置、pipeline 调度方式和可选 PP group 范围直接启动分布式分析。
+
 - `megatron_pipeline_group/distribute_trace_analysis.py`
   - DHTA 的核心编排脚本。
   - 负责按 Pipeline Parallel Group 切分 trace、调度本地分析、生成报告，并执行 MPI 聚合与异常检测。
 
 - `trace_etl.py`
   - Trace ETL 入口脚本。
-  - 用于对原始 trace 做过滤、整理和生成分布式分析所需的 trace 目录结构。
+  - 用于对原始 trace 做过滤与修复，并生成 `*-etl` 目录供后续分布式分析使用。
 
 ### 模型 / 内核层级统计相关
 
@@ -131,8 +225,8 @@ workspace/<project_name>/
   - 适合分析单个 rank 中模型组件的耗时占比。
 
 - `call_graph_kernel_level_fwd_bwd_statistics.py`
-  - 内核层级 forward/backward 统计脚本。
-  - 在模型层级基础上继续抽取 kernel、shape、TFLOPS、带宽等指标。
+  - 当前主要提供一组 kernel 层级 shape / TFLOPS / 带宽提取函数与模板。
+  - 脚本入口仍偏实验性质，默认通过内嵌路径、固定 rank 和输出文件名运行，适合二次改造或交互式分析，不像模型层级脚本那样已经完成通用 CLI 化。
 
 - `call_graph_template.py`
   - 调用图模板定义文件。
@@ -145,7 +239,68 @@ workspace/<project_name>/
 - `musa_basic_kernel_info.py`
   - 基础 kernel 信息计算工具。
 
+## Trace ETL 与过滤预处理
+
+`trace_etl.py` 用于在正式执行 DHTA 之前，对原始 trace 做一次面向 Megatron 场景的清洗与重定向。当前脚本仍然是一个轻量 CLI 入口，但它已经固定了核心处理流程：修复部分 JSON 问题、过滤噪声函数、保留必要事件，并将结果输出到新的 `*-etl` 目录。
+
+> 注意：`trace_etl.py` 现在同时兼容 `--trace-dir` 和历史参数 `--trace-dir`；为了和其他脚本保持一致，下面示例统一使用 `--trace-dir`。
+
+### 当前处理逻辑
+
+`trace_etl.py` 的主要步骤如下：
+
+1. 通过 `--trace-dir` 指定原始 trace 目录。
+2. 通过 `--tp`、`--pp`、`--dp`、`--ep` 提供当前 Megatron 并行配置。
+3. 为每个 trace 文件先调用 `trace_json_repair.fix_json_value_missing()` 修复缺失值问题。
+4. 过滤一批对分析帮助不大的 Python / runtime 噪声函数，例如 `__init__`、`threading.py(...)`、`socket.py(...)`、`multiprocessing/...` 等。
+5. 对 `mooncake_p2p_recv_from` / `mooncake_p2p_send_to` 事件保留记录，但统一改写为 `user_annotation` 类别，便于后续分析。
+6. 将过滤后的结果写入 `<trace-dir>-etl/`，再交给 `DistributedMegatronTraceAnalysis.pp_etl()` 按 PP group 组织。
+
+### 基本运行
+
+```bash
+python -m musa_examples.trace_etl \
+  --trace-dir /path/to/trace-dir \
+  --tp 1 \
+  --pp 4 \
+  --dp 2 \
+  --ep 8
+```
+
+如果需要多机并行执行 ETL，可按脚本中的示例通过 MPI 启动：
+
+```bash
+mpirun -allow-run-as-root -np 2 --bind-to none \
+  --hostfile ./hostfile \
+  --map-by ppr:1:node \
+  --wdir /path/to/HolisticTraceAnalysis \
+  python -m musa_examples.trace_etl \
+    --trace-dir /path/to/trace-dir \
+    --tp 1 --pp 4 --dp 2 --ep 8
+```
+
+### 命令行参数
+
+| 参数 | 是否必需 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `--trace-dir` | 是 | 无 | 原始 trace 目录。 |
+| `--tp` | 是 | 无 | Tensor Parallel size。 |
+| `--pp` | 是 | 无 | Pipeline Parallel size。 |
+| `--dp` | 是 | 无 | Data Parallel size。 |
+| `--ep` | 是 | 无 | Expert Parallel size。 |
+
+### 输出结果
+
+脚本会在原目录旁生成一个新的 ETL 目录：
+
+```text
+/path/to/trace-dir-etl/
+```
+
+该目录中的 trace 已完成基础过滤与修复，适合继续作为 `parse_megatron.py --trace-dir ...` 的输入。
+
 ## 模板驱动的模型层级 forward/backward 统计
+
 
 虽然 DHTA 是 `musa_examples/` 的重点，但在定位单个 rank 或局部模型结构的性能问题时，`call_graph_model_level_fwd_bwd_statistics.py` 是最常用的细查脚本。当前版本已经改为命令行参数驱动，不再需要在脚本内手动修改 trace 路径、rank 和输出文件名。
 
@@ -167,14 +322,12 @@ workspace/<project_name>/
 ### 基本运行
 
 ```bash
-cd musa_examples
-
 # 建议禁用纳秒舍入，保留更精确的 trace 时间
 export HTA_DISABLE_NS_ROUNDING=1
 
 # 分析单个 rank
-python call_graph_model_level_fwd_bwd_statistics.py \
-  --trace-dir /path/to/trace_dir \
+python -m musa_examples.call_graph_model_level_fwd_bwd_statistics \
+  --trace-dir /path/to/trace-dir \
   --rank 16 \
   --template kimi_epoverlap \
   --output-dir model_main_stack
@@ -192,8 +345,8 @@ model_main_stack/
 如果不传 `--rank`，脚本会分析 `--trace-dir` 中发现的全部 rank：
 
 ```bash
-python call_graph_model_level_fwd_bwd_statistics.py \
-  --trace-dir /path/to/trace_dir \
+python -m musa_examples.call_graph_model_level_fwd_bwd_statistics \
+  --trace-dir /path/to/trace-dir \
   --template kimi_epoverlap \
   --output-dir model_main_stack
 ```
@@ -281,6 +434,61 @@ pretrain_kimi.py(\d+): <module>
 3. 如果 trace 很大，避免一开始不传 `--rank` 直接分析全部 rank。
 4. 若某个函数名在模板中重复出现，需要添加 `@dup@` 并保证其祖先链路足够区分不同位置。
 5. 若要分析 kernel shape、TFLOPS 或带宽，使用 `call_graph_kernel_level_fwd_bwd_statistics.py`，不要依赖模型层级脚本输出这些指标。
+
+### Kernel 层级 shape / TFLOPS / 带宽分析
+
+`call_graph_kernel_level_fwd_bwd_statistics.py` 当前更像一个实验性分析脚本，而不是已经封装完成的通用 CLI。README 这里更适合描述它“能做什么”和“当前怎么使用”，而不是把它写成一个已经参数化完成的命令行工具。
+
+### 当前处理逻辑
+
+该脚本当前提供的核心能力包括：
+
+1. 基于调用图模板定位带 `@shape@` 标记的 forward kernel。
+2. 从当前节点或其父节点提取 `input_dims` / `input_type`。
+3. 对以下类型 kernel 计算 shape 相关指标：
+   - `general_gemm`
+   - `general_grouped_gemm`
+   - `quantize`
+   - `aten::_scaled_dot_product_attention_flash_musa`
+4. 同时尝试关联 backward 路径中的对应 kernel，分别输出 `bwd-0`、`bwd-1` 等位置的统计。
+5. 将结果写入文本文件，输出每个 kernel 的 shape、平均时间、TFLOPS 或带宽分位数。
+
+### 当前脚本状态
+
+与 `call_graph_model_level_fwd_bwd_statistics.py` 不同，这个脚本目前仍存在以下固定项：
+
+- 入口使用 `if __name__ == "__main__":` 内嵌流程，而不是 `argparse`。
+- 默认 `base_dir = "../"`，并将 `trace-dir` 固定指向 `../good_perf`。
+- 默认只分析 `rank == 32`。
+- 默认输出文件名形如 `20260211-<rank>-repo6.txt`。
+- 启动前会显式把 `ParserConfig.ARGS_INPUT_SHAPE` 加入默认解析配置，以确保 trace 中的 shape 信息被提取出来。
+
+### 当前使用方式
+
+如果要直接使用该脚本，通常需要先按当前任务手动修改以下内容：
+
+- `base_dir`
+- `trace-dir`
+- 目标 `rank`
+- 输出文件名
+
+也就是说，它更适合在研究某类 kernel 指标时作为分析模板或二次开发入口，而不是像 `parse_megatron.py`、`call_graph_model_level_fwd_bwd_statistics.py` 那样直接复用现成 CLI。
+
+### 输出指标
+
+脚本当前会围绕匹配到的 kernel 输出以下信息：
+
+- `shape`
+- `mean_time(us)`
+- `TFLOPS` 或 `GB/s` 的平均值
+- `q_25 / q_50 / q_75`
+- `count`
+
+### 使用建议
+
+1. 先用模型层级脚本确认模板能稳定匹配到目标函数，再做 kernel 级 shape / TFLOPS 分析。
+2. 运行前确认解析配置已经启用 `ParserConfig.ARGS_INPUT_SHAPE`，否则 shape 相关字段可能不存在。
+3. 如果模型代码或 kernel 名称变化，优先更新 `call_graph_template.py` 中带 `@shape@` 的模板项，以及脚本内的 `SHAPE_POSITION_FWD_BWD` / `SHAPE_POSITION_FWD_BWD_OF_FLASH_ATTENTION` 映射。
 
 ## 适用场景
 

@@ -1,37 +1,53 @@
-from megatron_pipeline_group.distribute_trace_analysis import DistributedMegatronTraceAnalysis
-        
+import argparse
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Analyze Megatron traces with configurable parallelism and schedule parameters.",
+    )
+    parser.add_argument("--trace-dir", required=True, help="trace directory")
+    parser.add_argument("--tp", type=int, default=1, help="tensor parallel size")
+    parser.add_argument("--pp", type=int, default=2, help="pipeline parallel size")
+    parser.add_argument("--dp", type=int, default=1, help="data parallel size")
+    parser.add_argument("--ep", type=int, default=8, help="expert parallel size")
+    parser.add_argument(
+        "--pp-schedule",
+        choices=["1f1b", "1f1b-interleaved", "1f1b-interleaved-epoverlap"],
+        default="1f1b",
+        help="pipeline parallel schedule",
+    )
+    parser.add_argument("--num-bs", type=int, default=16, help="number of micro batches")
+    parser.add_argument("--vpp", type=int, default=2, help="virtual pipeline parallel size")
+    parser.add_argument(
+        "--pp-group-id-range",
+        nargs=2,
+        type=int,
+        metavar=("START", "END"),
+        default=None,
+        help="inclusive pipeline parallel group id range",
+    )
+    return parser.parse_args()
+
 
 def main():
-    # TP_SIZE = 2
-    # PP_SIZE = 4
-    # DP_SIZE = 1
-    # trace_dir = '/home/dist/HolisticTraceAnalysis/llama3-20250728-tp2pp4/iteration_4'
-    # DS MoE
-    TP_SIZE = 1
-    PP_SIZE = 4
-    DP_SIZE = 2
-    EP_SIZE = 8
-    PP_SCHEDULE = '1f1b'
-    MIRCRO_BATCHSIZE = 32
-    #trace_dir = '/home/huayongpan/hta/HolisticTraceAnalysis-gitlab/mccl-1f1b'
-    #dist_megatron_analysis = DistributedMegatronTraceAnalysis(trace_dir, TP_SIZE, EP_SIZE, DP_SIZE, PP_SIZE, pp_schedule=PP_SCHEDULE, micro_bs = MIRCRO_BATCHSIZE)
-    #dist_megatron_analysis.analyze()
+    from megatron_pipeline_group.distribute_trace_analysis import DistributedMegatronTraceAnalysis
 
-    VPP_SIZE = 2
-    MIRCRO_BATCHSIZE = 32
-    PP_SCHEDULE = '1f1b-interleaved'
-    #trace_dir = '/home/huayongpan/hta/HolisticTraceAnalysis-gitlab/mooncake-vpp2'
-    #dist_megatron_analysis = DistributedMegatronTraceAnalysis(trace_dir, TP_SIZE, EP_SIZE, DP_SIZE, PP_SIZE, pp_schedule=PP_SCHEDULE, vpp_size=VPP_SIZE, micro_bs = MIRCRO_BATCHSIZE)
-    #dist_megatron_analysis.analyze()
+    args = parse_args()
+    pp_group_id_range = None
+    if args.pp_group_id_range is not None:
+        pp_group_id_range = tuple(args.pp_group_id_range)
+    dist_megatron_analysis = DistributedMegatronTraceAnalysis(
+        args.trace_dir,
+        args.tp,
+        args.ep,
+        args.dp,
+        args.pp,
+        pp_schedule=args.pp_schedule,
+        vpp_size=args.vpp,
+        micro_bs=args.num_bs,
+    )
+    dist_megatron_analysis.analyze(pp_group_id_range=pp_group_id_range)
 
-    PP_SIZE = 2
-    DP_SIZE = 1
-    EP_SIZE = 8
-    PP_SCHEDULE = '1f1b-interleaved-epoverlap'
-    MIRCRO_BATCHSIZE = 16
-    trace_dir = '/home/huayongpan/hta/HolisticTraceAnalysis-gitlab/ep-overlap-etl'
-    dist_megatron_analysis = DistributedMegatronTraceAnalysis(trace_dir, TP_SIZE, EP_SIZE, DP_SIZE, PP_SIZE, pp_schedule=PP_SCHEDULE, vpp_size=VPP_SIZE, micro_bs = MIRCRO_BATCHSIZE)
-    dist_megatron_analysis.analyze()
 
 if __name__ == '__main__':
     main()

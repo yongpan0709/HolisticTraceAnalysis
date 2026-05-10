@@ -81,7 +81,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Generate version_info.mk file which will include ddk, musa_toolkit, mudnn, mccl download url.",
         usage=f"mpirun -allow-run-as-root -np 2 --bind-to none --hostfile ./hostfile --map-by ppr:2:node --wdir /Users/huayongpan/Documents/hta/HolisticTraceAnalysis-gitlab/musa_examples python trace_etl.py --trace_dir <trace directory> --tp <tp size> --pp <pp size> --dp <dp size> --ep <ep size>")
-    parser.add_argument('--trace_dir', required=True, help='trace directory')
+    parser.add_argument("--trace-dir", required=True, help="trace directory")
     parser.add_argument('--tp', type=int, required=True, help='tp size')
     parser.add_argument('--pp', type=int, required=True, help='pp size')
     parser.add_argument('--dp', type=int, required=True, help='dp size')

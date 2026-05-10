@@ -8,8 +8,8 @@ import re
 import os
 import time
 import multiprocessing as mp
-from trace_json_repair import fix_json_value_missing
-from megatron_pipeline_group.distribute_trace_analysis import DistributedMegatronTraceAnalysis
+from musa_examples.trace_json_repair import fix_json_value_missing
+from musa_examples.megatron_pipeline_group.distribute_trace_analysis import DistributedMegatronTraceAnalysis
   
 
 # filepath: /home/mccxadmin/Documents/py-projects/HolisticTraceAnalysis/filter-user-annotate.py

@@ -30,7 +30,7 @@ def parse_args():
 
 
 def main():
-    from megatron_pipeline_group.distribute_trace_analysis import DistributedMegatronTraceAnalysis
+    from musa_examples.megatron_pipeline_group.distribute_trace_analysis import DistributedMegatronTraceAnalysis
 
     args = parse_args()
     pp_group_id_range = None

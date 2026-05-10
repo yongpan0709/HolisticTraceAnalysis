@@ -8,12 +8,12 @@ from collections import defaultdict
 from typing import Dict, List
 import numpy as np
 import pandas as pd
-from call_graph_template import extract_func_name_from_template, extract_dup_or_shape_func_name_from_template, set_pandas_display_options
+from musa_examples.call_graph_template import extract_func_name_from_template, extract_dup_or_shape_func_name_from_template, set_pandas_display_options
 import pickle
 import re
-from utils.musa_basic_kernel_info import calculate_groupedlinear_tflops_or_bw, calculate_linear_tflops_or_bw, calculate_scaled_dot_product_attention_flash_musa_flops
-from utils.musa_fwdbwd_util import get_forward_duration_dup, get_forward_duration_uniq
-from utils.call_graph_utils import get_main_stack_on_rank
+from musa_examples.utils.musa_basic_kernel_info import calculate_groupedlinear_tflops_or_bw, calculate_linear_tflops_or_bw, calculate_scaled_dot_product_attention_flash_musa_flops
+from musa_examples.utils.musa_fwdbwd_util import get_forward_duration_dup, get_forward_duration_uniq
+from musa_examples.utils.call_graph_utils import get_main_stack_on_rank
 
 def extract_shape(func_name, df, func_mapping_node_index, need_shape_func_name):
     shape_info: Dict[str, Dict[str, pd.Series]] = defaultdict(lambda: defaultdict(pd.Series))

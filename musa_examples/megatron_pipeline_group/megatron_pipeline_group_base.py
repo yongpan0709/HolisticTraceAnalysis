@@ -22,7 +22,7 @@ from hta.configs.default_values import DEFAULT_TRACE_DIR
 from hta.common.trace_call_graph import CallGraph
 from hta.common.trace_file import get_trace_files
 from musa_examples.utils.parallel_state import RankGenerator
-from utils.call_graph_utils import get_main_stack_on_rank
+from musa_examples.utils.call_graph_utils import get_main_stack_on_rank
 
 
 def parallel_callgraph_create(rank_id, trace_file):

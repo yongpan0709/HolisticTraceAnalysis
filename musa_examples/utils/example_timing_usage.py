@@ -7,7 +7,7 @@
 """
 
 import time
-from timing import (
+from musa_examples.utils.timing import (
     TimingTracker,
     get_timer,
     reset_timer,

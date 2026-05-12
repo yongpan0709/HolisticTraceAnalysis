@@ -240,3 +240,34 @@ def is_last_stage(
         rank, tensor_model_parallel_size, pipeline_model_parallel_size, data_parallel_size
     )
     return next_pp_rank is None
+
+def get_pp_rank_microbatches(
+    num_microbatches,
+    num_devices,
+    device_id,
+    num_stages_per_device,
+    microbatch_group_size_per_vp_stage,
+):
+    """ Default for 1f1b interleaved scheduling. 
+    Get the number of total, warmup, and remaining microbatches in PP scheduling.
+    Default: microbatch_group_size_per_vp_stage = pipeline_model_parallel_size
+    """
+    total_num_microbatches = num_microbatches * num_stages_per_device
+
+    if num_devices > 1:
+        # Run (num_model_chunks-1)*microbatch_group_size_per_vp_stage on
+        # all workers, followed by more microbatches after depending on
+        # stage ID (more forward passes for earlier stages, later stages can
+        # immediately start with 1F1B).
+        num_warmup_microbatches = (num_devices - device_id - 1) * 2
+        num_warmup_microbatches += (
+            num_stages_per_device - 1
+        ) * microbatch_group_size_per_vp_stage
+    else:
+        # forward_backward_no_pipelining
+        num_warmup_microbatches = 1
+
+    if num_warmup_microbatches >= total_num_microbatches:
+        num_warmup_microbatches = total_num_microbatches
+
+    return num_warmup_microbatches

@@ -1,4 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
@@ -10,125 +9,9 @@ from hta.common.trace_filter import NameFilter
 from hta.configs.config import logger
 from hta.configs.default_values import DEFAULT_TRACE_DIR
 from musa_examples.megatron_pipeline_group.megatron_pipeline_group_base import MegatronPipelineParallelGroupTraceBase
-
-def get_pp_rank_microbatches(
-    num_microbatches,
-    num_devices,
-    device_id,
-    num_stages_per_device,
-    microbatch_group_size_per_vp_stage,
-):
-    """Get the number of total, warmup, and remaining microbatches in PP scheduling.
-    Default: microbatch_group_size_per_vp_stage = pipeline_model_parallel_size
-    """
-    total_num_microbatches = num_microbatches * num_stages_per_device
-
-    if num_devices > 1:
-        # Run (num_model_chunks-1)*microbatch_group_size_per_vp_stage on
-        # all workers, followed by more microbatches after depending on
-        # stage ID (more forward passes for earlier stages, later stages can
-        # immediately start with 1F1B).
-        num_warmup_microbatches = (num_devices - device_id - 1) * 2
-        num_warmup_microbatches += (
-            num_stages_per_device - 1
-        ) * microbatch_group_size_per_vp_stage
-    else:
-        # forward_backward_no_pipelining
-        num_warmup_microbatches = 1
-
-    if num_warmup_microbatches >= total_num_microbatches:
-        num_warmup_microbatches = total_num_microbatches
-
-    return num_warmup_microbatches
-
-
-def get_schedule_table(
-    num_microbatches, num_model_chunks, microbatch_group_size_per_vp_stage
-):
-    """Get the schedule table for PP scheduling.
-    num_model_chunks=config.num_stages_per_device
-
-    Create a tunable schedule lookup table.
-    The schedule lookup table uses the virtual_microbatch_id to find the corresponding microbatch_id and model_chunk_id.
-    For example, the tunable schedule table for PP2 N3M5 with VP2 is constructed as below:
-    virtual_microbatch_id | 0 1 2 3 4 5 6 7 8 9
-    microbatch_id         | 0 1 2 0 1 2 3 4 3 4
-    model_chunk_id        | 0 0 0 1 1 1 0 0 1 1
-    """
-    schedule_table = []
-    for min_microbatch_id_in_group in range(
-        0, num_microbatches, microbatch_group_size_per_vp_stage
-    ):
-        if (
-            min_microbatch_id_in_group + microbatch_group_size_per_vp_stage
-            >= num_microbatches
-        ):
-            # Construct schedule for the last microbatch group
-            schedule_table.extend(
-                [
-                    (microbatch_id, model_chunk_id)
-                    for model_chunk_id in range(num_model_chunks)
-                    for microbatch_id in range(
-                        min_microbatch_id_in_group, num_microbatches
-                    )
-                ]
-            )
-        else:
-            # Construct schedule for other microbatch groups
-            schedule_table.extend(
-                [
-                    (microbatch_id, model_chunk_id)
-                    for model_chunk_id in range(num_model_chunks)
-                    for microbatch_id in range(
-                        min_microbatch_id_in_group,
-                        min_microbatch_id_in_group + microbatch_group_size_per_vp_stage,
-                    )
-                ]
-            )
-    return schedule_table
-
-def convert_schedule_table_to_order(
-    num_warmup_microbatches, num_model_chunks, schedule_table
-):
-    """Convert a tunable schedule lookup table to the te.make_graphed_callables() accepted
-    order format. For example, the tunable schedule table for PP2 N3M5 with VP2 is as below:
-    virtual_microbatch_id | 0 1 2 3 4 5 6 7 8 9
-    microbatch_id         | 0 1 2 0 1 2 3 4 3 4
-    model_chunk_id        | 0 0 0 1 1 1 0 0 1 1
-
-    Then the forward backward separated order is:
-    forward               | 1 1 1 2 2 2 1 1 2 2
-    backward              | -2 -2 -2 -1 -1 -1 -2 -2 -1 -1
-
-    If num_warmup_microbatches is 5, the output order is:
-    1 1 1 2 2 2 -2 1 -2 1 -2 2 -1 2 -1 -1 -2 -2 -1 -1
-    """
-    _, model_chunk_id_table = zip(*schedule_table)
-    forward_order = [chunk_id + 1 for chunk_id in model_chunk_id_table]
-    backward_order = [chunk_id - num_model_chunks for chunk_id in model_chunk_id_table]
-    order = forward_order[:num_warmup_microbatches]
-    for i in range(num_warmup_microbatches, len(forward_order)):
-        order.append(forward_order[i])
-        order.append(backward_order[i - num_warmup_microbatches])
-    if num_warmup_microbatches > 0:
-        order.extend(backward_order[-num_warmup_microbatches:])
-    return forward_order, backward_order, order
-
-def create_regex_for_match(prefixes):
-    """
-    Creates a regex pattern that matches any string starting with any of the provided prefixes.
-    
-    Parameters:
-    - prefixes (list): A list of prefixes to match at the start of a string.
-    
-    Returns:
-    - str: A regex pattern string.
-    """
-    # Escape each prefix to handle special regex characters
-    # Join the escaped prefixes with the regex OR operator '|'
-    # name_pattern = '^(' + '|'.join(escaped_prefixes) + ')'
-    name_pattern = '^(' + '|'.join(prefixes) + ')$'
-    return name_pattern
+from musa_examples.utils.parallel_state import get_pp_rank_microbatches
+from musa_examples.utils.pipeline_parallel_utils import convert_schedule_table_to_order, get_schedule_table
+from musa_examples.utils.trace_filter_utils import create_regex_for_full_match
 
 class MegatronPipelineParallel1F1BInterleavedGroupTrace(MegatronPipelineParallelGroupTraceBase):
     """1F1B interleaved (One-Forward-One-Backward) 调度下的 PP group trace 分析。"""
@@ -212,13 +95,13 @@ class MegatronPipelineParallel1F1BInterleavedGroupTrace(MegatronPipelineParallel
             'reduce_max_stat_across_model_parallel_group',
             'should_run_forward_backward',
         ]
-        filter_comm = NameFilter(create_regex_for_match(comm_names_list))
+        filter_comm = NameFilter(create_regex_for_full_match(comm_names_list))
         return filter_comm(trace_df)
 
     def filter_comm_only_traces(self, pp_group_id=0):
         for rank in self.all_pipeline_parallel_group_ranks[pp_group_id]:
             self.traces_comm_only[rank] = self.keep_comm_span_only(self.full_dfs[rank])
-        
+
     def establish_p2p_link_on_adjacent_ranks(self, pp_group_id=0):
         logger.info(f'[1F1B interleaved] Todo: establish p2p link on adjacent ranks for pp_group_id {pp_group_id}')
     

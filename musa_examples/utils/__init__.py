@@ -25,6 +25,10 @@ from musa_examples.utils.parallel_state import (
     is_first_stage,
     is_last_stage,
 )
+from musa_examples.utils.pipeline_parallel_utils import (
+    convert_schedule_table_to_order,
+    get_schedule_table,
+)
 from musa_examples.utils.timing import (
     TimingRecord,
     TimingTracker,
@@ -32,8 +36,16 @@ from musa_examples.utils.timing import (
     reset_timer,
     time_it,
 )
+from musa_examples.utils.trace_filter_utils import (
+    create_regex_for_full_match,
+    create_regex_for_prefix_match,
+)
 
 __all__ = [
+    "convert_schedule_table_to_order",
+    "create_regex_for_full_match",
+    "create_regex_for_prefix_match",
+    "get_schedule_table",
     "TimingRecord",
     "TimingTracker",
     "get_timer",

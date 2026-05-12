@@ -57,7 +57,7 @@ DHTA 用于扩展 HTA 的分析能力，使其适用于基于Pytorch + Megatron-
 
 ```bash
 # 1. 获取代码
-git clone https://sh-code.mthreads.com/ai/HolisticTraceAnalysis
+git clone -b kuae-2.1 https://sh-code.mthreads.com/ai/HolisticTraceAnalysis
 cd HolisticTraceAnalysis
 
 # 如需切换到特定分支，请按实际开发分支执行 git checkout
@@ -239,7 +239,7 @@ mpirun -allow-run-as-root -np 16 --bind-to none \
 - `musa_basic_kernel_info.py`
   - 基础 kernel 信息计算工具。
 
-## Trace ETL 与过滤预处理
+## Trace ETL 与过滤预处理(可跳过，遗留kineto bug，新版本已解)
 
 `trace_etl.py` 用于在正式执行 DHTA 之前，对原始 trace 做一次面向 Megatron 场景的清洗与重定向。当前脚本仍然是一个轻量 CLI 入口，但它已经固定了核心处理流程：修复部分 JSON 问题、过滤噪声函数、保留必要事件，并将结果输出到新的 `*-etl` 目录。
 
